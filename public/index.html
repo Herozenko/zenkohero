@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><script src="config.js"></script><script>
+/* ローカルモード（config.js の api が空のとき）：ブラウザ内(localStorage)に保存。サーバー不要 */
+function createHandler({ kv, token, seed }) {
+  const enc = (k) => k.replace(/\//g, "~"), dec = (k) => k.replace(/~/g, "/");
+  const sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
+  const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+  const same = (a, b) => {
+    if (a.length !== b.length) return false;
+    let r = 0;
+    for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return r === 0;
+  };
+  const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+  const merge = (t, s) => {
+    for (const k of Object.keys(s)) {
+      const v = s[k];
+      if (v === null) delete t[k];
+      else if (isObj(v) && isObj(t[k])) merge(t[k], v);
+      else t[k] = v;
+    }
+    return t;
+  };
+  const strip = (d) => {
+    if (isObj(d) && isObj(d.m)) {
+      for (const k of Object.keys(d.m)) if (d.m[k] === null) delete d.m[k];
+    }
+    return d;
+  };
+  const okPath = (p) => typeof p === "string" && /^[A-Za-z0-9_\-.:@+]+\/[A-Za-z0-9_\-.:@+]+$/.test(p) && p.split("/").every((s) => !/^\.+$/.test(s));
+  let seeded = false;
+  async function ensureSeed() {
+    if (seeded) return;
+    if (!await kv.get("_init")) {
+      for (const [p, b] of Object.entries(seed.docs || {})) await kv.set(enc(p), b);
+      await kv.set("_init", { t: Date.now() });
+    }
+    seeded = true;
+  }
+  async function readAll() {
+    const keys = (await kv.list()).filter((k) => !k.startsWith("_")), docs = {};
+    let i = 0;
+    await Promise.all(Array.from({ length: 12 }, async () => {
+      while (i < keys.length) {
+        const k = keys[i++], r = await kv.get(k);
+        if (r) docs[dec(k)] = r.value;
+      }
+    }));
+    return docs;
+  }
+  async function apply(op) {
+    if (!op || !okPath(op.path)) throw new Error("bad path");
+    const key = enc(op.path);
+    if (op.op === "delete") {
+      await kv.del(key);
+      return;
+    }
+    if (op.op === "set") {
+      await kv.set(key, strip(op.data || {}));
+      return;
+    }
+    if (op.op !== "merge") throw new Error("bad op");
+    for (let i = 0; i < 8; i++) {
+      const cur = await kv.get(key), val = merge(cur ? cur.value : {}, op.data || {});
+      if (await kv.set(key, strip(val), cur ? cur.etag : null)) return;
+      await sleep2(25 * (i + 1));
+    }
+    throw new Error("conflict");
+  }
+  return async (req) => {
+    const url = new URL(req.url);
+    if (!url.pathname.startsWith("/api/")) return J({ error: "not found" }, 404);
+    if (req.method !== "POST") return J({ error: "method" }, 405);
+    const auth = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+    const ip = (req.headers.get("x-nf-client-connection-ip") || (req.headers.get("x-forwarded-for") || "").split(",")[0] || "unknown").trim().replace(/[^A-Za-z0-9.:-]/g, "_");
+    const fk = "_fail~" + ip, now = Date.now(), fr = await kv.get(fk), fv = fr && now - fr.value.t < 6e5 ? fr.value : null;
+    if (fv && fv.n >= 10) return J({ error: "too many attempts" }, 429);
+    if (!token || !same(auth, token)) {
+      await kv.set(fk, { n: (fv ? fv.n : 0) + 1, t: now });
+      return J({ error: "unauthorized" }, 401);
+    }
+    if (fr) await kv.del(fk);
+    let body = {};
+    try {
+      body = await req.json();
+    } catch (e) {
+    }
+    try {
+      await ensureSeed();
+      const route = url.pathname.slice(5);
+      if (route === "state") {
+        const rev = await kv.get("_rev");
+        return J({ docs: await readAll(), rev: rev ? rev.value : null, base: body.withBase ? seed.base : void 0 });
+      }
+      if (route === "rev") {
+        const rev = await kv.get("_rev");
+        return J({ rev: rev ? rev.value : null });
+      }
+      if (route === "batch") {
+        const ops = Array.isArray(body.ops) ? body.ops : [];
+        if (ops.length > 300) return J({ error: "too many ops" }, 413);
+        for (const op of ops) await apply(op);
+        const rev = { t: Date.now(), by: String(body.cid || "") };
+        if (ops.length) await kv.set("_rev", rev);
+        return J({ rev });
+      }
+      return J({ error: "not found" }, 404);
+    } catch (e) {
+      return J({ error: String(e && e.message || e) }, 500);
+    }
+  };
+}
+(function(){
+ const P='sa:',kv={async get(k){try{const r=localStorage.getItem(P+k);return r?(o=>({value:o.v,etag:o.e}))(JSON.parse(r)):null}catch(e){return null}},
+  async set(k,v,e){const cur=await kv.get(k);if(e===null&&cur)return false;if(typeof e==='string'&&(!cur||cur.etag!==e))return false;localStorage.setItem(P+k,JSON.stringify({v,e:Math.random().toString(36).slice(2)}));return true},
+  async del(k){localStorage.removeItem(P+k)},async list(){const o=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith(P))o.push(k.slice(P.length))}return o}};
+ let H=null;
+ const getJson=async u=>{try{const r=await fetch(u,{cache:'no-store'});return r.ok?await r.json():null}catch(e){return null}};
+ window.localFetch=async function(route,opts){
+  if(!H){const b=await getJson('base.json')||{docs:{},base:{meta:{updated:''},months:[],shifts:[]}},st=await getJson('staff-data.json')||{docs:{}};
+   H=createHandler({kv,token:'local',seed:{docs:Object.assign({},b.docs,st.docs),base:b.base}})}
+  return H(new Request('http://local/api/'+route,{method:'POST',headers:{authorization:'Bearer local'},body:opts.body}))};
+})();
+</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E👥%3C/text%3E%3C/svg%3E">
+<title>スタッフ管理ダッシュボード</title>
+<style>
+:root{--bg:#f4f5f9;--card:#fff;--fg:#1b2233;--mut:#69728a;--bd:#e2e5ee;--acc:#4f46e5;--accb:#eceeff;--okf:#15803d;--okb:#dcfce7;--canf:#0369a1;--canb:#e0f2fe;--askf:#b45309;--askb:#fef3c7;--ngf:#8a93a6;--ngb:#f0f2f6;--triF:#6d28d9;--trib:#ede9fe;--badf:#b91c1c;--badb:#fee2e2;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1320;--card:#181d2e;--fg:#e8ebf5;--mut:#9aa3ba;--bd:#2a3148;--acc:#8b86ff;--accb:#25284a;--okf:#4ade80;--okb:#12351f;--canf:#38bdf8;--canb:#0e2b3d;--askf:#fbbf24;--askb:#3a2a0a;--ngf:#7d869b;--ngb:#222839;--triF:#a78bfa;--trib:#2a2147;--badf:#f87171;--badb:#401818}}
+:root[data-theme="dark"]{--bg:#0f1320;--card:#181d2e;--fg:#e8ebf5;--mut:#9aa3ba;--bd:#2a3148;--acc:#8b86ff;--accb:#25284a;--okf:#4ade80;--okb:#12351f;--canf:#38bdf8;--canb:#0e2b3d;--askf:#fbbf24;--askb:#3a2a0a;--ngf:#7d869b;--ngb:#222839;--triF:#a78bfa;--trib:#2a2147;--badf:#f87171;--badb:#401818}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif}
+button,input,select{font:inherit;color:inherit}
+header{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--card);border-bottom:1px solid var(--bd)}
+.hw{max-width:1200px;margin:auto;padding:10px 14px 0}
+h1{font-size:16px;margin:0;min-width:0}.hr{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}h1 small{font-weight:400;color:var(--mut);margin-left:8px}
+nav{display:flex;gap:4px;overflow-x:auto}
+nav button{flex:1;white-space:nowrap;border:0;background:none;padding:9px 12px;border-bottom:3px solid transparent;color:var(--mut);font-weight:600;cursor:pointer}
+nav button.on{color:var(--acc);border-color:var(--acc)}
+main{max-width:1200px;margin:auto;padding:14px}
+.bar{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:12px;display:flex;flex-direction:column;gap:10px}
+input[type=search],input[type=text],input[type=number],input[type=date],input[type=tel],input[type=email],input[type=month],input[type=password],select{width:100%;padding:11px 14px;border:1px solid var(--bd);border-radius:10px;background:var(--bg);outline:none}
+input:focus,select:focus{border-color:var(--acc)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chips select{width:auto;padding:7px 10px}
+.fc{border:1px solid var(--bd);background:var(--card);border-radius:999px;padding:5px 12px;cursor:pointer}
+.fc small{color:var(--mut);margin-left:3px}
+.fc.on{background:var(--acc);border-color:var(--acc);color:#fff}.fc.on small{color:#e5e7ff}
+.mut,small{color:var(--mut)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;cursor:pointer;display:flex;flex-direction:column;gap:2px}
+.card:hover{border-color:var(--acc)}
+.card .top{display:flex;justify-content:space-between;align-items:center}
+.card b{font-size:15px}
+.id{color:var(--mut);font-size:12px}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.tags i,.pill{font-style:normal;font-size:11px;padding:1px 8px;border-radius:999px;background:var(--accb);color:var(--acc)}
+.gp{font-size:12px;font-weight:700;padding:1px 9px;border-radius:6px;background:var(--ngb);color:var(--mut)}
+.g-AA{background:#fde68a;color:#78350f}.g-A\+{background:#fed7aa;color:#7c2d12}.g-A{background:#bbf7d0;color:#14532d}.g-B{background:#bfdbfe;color:#1e3a8a}.g-C{background:#e5e7eb;color:#374151}
+.more{display:block;margin:14px auto;padding:10px 28px;border:1px solid var(--acc);color:var(--acc);background:none;border-radius:10px;cursor:pointer}
+.st-ok{background:var(--okb);color:var(--okf)}.st-can{background:var(--canb);color:var(--canf)}.st-ask{background:var(--askb);color:var(--askf)}.st-ng{background:var(--ngb);color:var(--ngf)}.st-tri{background:var(--trib);color:var(--triF)}.st-bad{background:var(--badb);color:var(--badf)}
+.seg{display:inline-flex;border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+.seg button{border:0;background:var(--card);padding:7px 14px;cursor:pointer}.seg button.on{background:var(--acc);color:#fff}
+.lg{display:flex;gap:6px;flex-wrap:wrap;font-size:12px}
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.wh{text-align:center;font-weight:700;color:var(--mut);padding:4px}.w0{color:#ef4444}.w6{color:#3b82f6}
+.day{background:var(--card);border:1px solid var(--bd);border-radius:8px;min-height:84px;padding:4px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.day.today{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.dn{font-weight:700;font-size:12px}.dn span{display:none;font-weight:400;color:var(--mut)}
+.chip{border:0;border-radius:6px;padding:2px 5px;font-size:11px;display:flex;justify-content:space-between;gap:4px;cursor:pointer;text-align:left}
+.chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc{overflow:auto;max-height:70vh;background:var(--card);border:1px solid var(--bd);border-radius:12px}
+.mx{border-collapse:separate;border-spacing:0;font-size:12px}
+.mx th,.mx td{border-bottom:1px solid var(--bd);border-right:1px solid var(--bd);min-width:30px;text-align:center;padding:3px 2px;background:var(--card)}
+.mx thead th{position:sticky;top:0;z-index:2;vertical-align:top}
+.mx .nm1{position:sticky;left:0;z-index:3;min-width:118px;text-align:left;padding:3px 8px;cursor:pointer}
+.mx thead .nm1{z-index:4}
+.cv span{writing-mode:vertical-rl;max-height:88px;overflow:hidden;white-space:nowrap;display:inline-block}
+.mx td.c{cursor:pointer;font-weight:700}
+.row{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:grid;grid-template-columns:200px 64px 1fr;gap:10px;align-items:start}
+.who{cursor:pointer;display:flex;flex-direction:column}
+.big{font-size:22px;font-weight:800;color:var(--acc);text-align:center;line-height:1}.big small{font-size:11px;display:block;font-weight:400}
+.dts{display:flex;flex-wrap:wrap;gap:4px}
+.dc{border:0;border-radius:6px;padding:2px 8px;background:var(--okb);color:var(--okf);cursor:pointer;font-size:12px}
+.dc.fu{background:none;border:1px dashed var(--canf);color:var(--canf)}
+#ov{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(10,14,28,.55);z-index:20;display:flex;align-items:flex-end;justify-content:center}
+#ov[hidden]{display:none}
+.mb{background:var(--card);width:min(640px,100%);max-height:86vh;overflow:auto;border-radius:16px 16px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom,0px));position:relative}
+.x{position:absolute;right:12px;top:10px;border:0;background:var(--ngb);border-radius:50%;width:30px;height:30px;cursor:pointer}
+.mb h3{margin:0 40px 2px 0}.mb h4{margin:14px 0 6px}
+dl{display:grid;grid-template-columns:84px 1fr;gap:4px 10px;margin:10px 0}dt{color:var(--mut)}dd{margin:0;word-break:break-all}
+.names{display:flex;flex-wrap:wrap;gap:6px}
+.nm{border:1px solid var(--bd);background:var(--bg);border-radius:8px;padding:3px 10px;cursor:pointer}
+ul.h{list-style:none;padding:0;margin:0}ul.h li{display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--bd)}
+a{color:var(--acc)}
+footer{max-width:1200px;margin:auto;padding:0 14px 24px;color:var(--mut);font-size:12px}
+.btn{border:1px solid var(--bd);background:var(--card);border-radius:10px;padding:8px 14px;cursor:pointer;font-weight:600;white-space:nowrap}
+.btn:hover{border-color:var(--acc)}.btn.p{background:var(--acc);border-color:var(--acc);color:#fff}.btn.d{color:var(--badf);border-color:var(--badf)}.btn.s{padding:3px 10px;font-size:12px;font-weight:600}
+.fg{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;margin:12px 0}.fg3{display:grid;grid-template-columns:110px 1fr 90px auto;gap:10px;align-items:end;margin:8px 0}
+.fl{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut);font-weight:600}.fl input,.fl select{color:var(--fg);font-weight:400;font-size:14px}.inl{display:flex;gap:6px}
+.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}.err{color:var(--badf);margin:6px 0 0;min-height:1em}
+.er{display:grid;grid-template-columns:104px 1fr 72px 54px auto;gap:6px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd)}.er input,.er select{padding:7px 8px}
+.ar{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bd)}.ar select{width:auto;padding:5px 8px}.sb{display:flex;gap:4px}
+.addd{margin-top:auto;align-self:flex-start;border:1px dashed var(--bd);background:none;color:var(--mut);border-radius:6px;font-size:11px;cursor:pointer;padding:0 6px;opacity:.7}
+.mx td.st-e{color:var(--bd)}
+.lnk{border:0;background:none;color:var(--acc);cursor:pointer;text-decoration:underline;padding:0}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:#111827;color:#fff;padding:9px 18px;border-radius:999px;z-index:30;font-size:13px;max-width:92vw}#toast[hidden]{display:none}
+@media (max-width:700px){.fg{grid-template-columns:1fr}.fg3{grid-template-columns:1fr 1fr}.er{grid-template-columns:96px 1fr 64px}.er small,.er .btn{grid-column:auto}}
+.pv{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0}.pv td,.pv th{border-bottom:1px solid var(--bd);padding:3px 6px;text-align:left;white-space:nowrap}
+.box{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin:8px 0;background:var(--bg)}.box label{display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer}
+.ok{color:var(--okf)}.warn{color:var(--askf)}.bad{color:var(--badf)}
+.crow{grid-template-columns:1fr auto auto;align-items:center;cursor:pointer}.crow:hover{border-color:var(--acc)}
+.chk{display:flex;gap:6px;align-items:center;white-space:nowrap;cursor:pointer}.chk input{width:auto}
+.er2{display:grid;grid-template-columns:150px 1fr auto;gap:6px;margin:6px 0;align-items:center}.er2 input{padding:7px 8px}
+.srow{border-bottom:1px solid var(--bd);padding:8px 0;display:flex;flex-direction:column;gap:6px}.sh{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.fl select+input,.fl input+select{margin-top:4px}.grp{margin-bottom:8px}.grp .row{margin-bottom:0}
+.gdet{background:var(--card);border:1px solid var(--bd);border-top:0;border-radius:0 0 12px 12px;padding:6px 12px 12px}
+.gst{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.sdd{border:1px solid var(--bd);border-radius:10px;margin:6px 0;padding:6px 10px}.sdd summary{cursor:pointer}.sdr{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;padding:5px 0;border-top:1px dashed var(--bd)}.sdd1{min-width:68px;font-weight:600}
+.mx input.cin{width:94px;padding:4px 6px;text-align:right}.mx td.dyn,.mx tfoot td{font-weight:700;background:var(--bg)}.mx td.na{color:var(--bd)}.mb.wide{width:min(1040px,100%)}
+.mnav{display:flex;gap:8px;margin:0 44px 10px 0}.nb{border:0;background:none;padding:9px 8px;color:var(--mut);font-weight:700;cursor:pointer;white-space:nowrap}.nb:hover{color:var(--acc)}.hnav{display:flex;align-items:center}.hnav nav{flex:1;min-width:0}
+.chip.sel{outline:2px solid var(--acc);box-shadow:0 0 0 3px var(--accb)}
+.lt{width:100%}.lt th,.lt td{white-space:normal;text-align:left;vertical-align:top;padding:7px 9px;min-width:60px}.lt thead th{background:var(--bg)}.lt tr.un td{color:var(--mut)}.lt td.num{text-align:right;white-space:nowrap}
+.fg4{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin:8px 0}.erw{border-bottom:1px solid var(--bd);padding:2px 0 6px}.erw .er{border-bottom:0}.er3{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 0 2px}.er3 select,.er3 input{padding:6px 8px}.chip{flex-wrap:wrap}.chip .cl{width:100%;font-size:10px;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:700px){.fg4,.er3{grid-template-columns:1fr}}
+.bds{width:100%;display:flex;gap:3px;flex-wrap:wrap}.bd{font-style:normal;font-size:10px;line-height:1.7;padding:1px 7px;border-radius:5px;cursor:pointer}.tm{display:block;width:100%;font-size:10px;opacity:.85}.lst{width:100%;border-collapse:collapse;font-size:13px}.lst th,.lst td{padding:8px 6px;border-bottom:1px solid var(--bd);text-align:left;vertical-align:middle}.lst .tgb{border:1px solid #9ca3af;background:transparent;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;color:inherit;white-space:nowrap}.lst .tgb.ok{background:#16a34a;color:#fff;border-color:#16a34a}.lst .lk{background:none;border:0;padding:0;font:inherit;color:inherit;text-decoration:underline dotted;cursor:pointer;text-align:left}@media(max-width:700px){.lst .hm{display:none}}.bd.ok{background:#16a34a;color:#fff}.bd.ng{background:#ffffffb8;color:#6b7280;border:1px solid #9ca3af}
+.mfoot{position:sticky;bottom:0;display:flex;gap:10px;margin:16px -18px calc(-18px - env(safe-area-inset-bottom,0px));padding:12px 18px calc(12px + env(safe-area-inset-bottom,0px));background:var(--card);border-top:1px solid var(--bd);z-index:2}.btn.big{flex:1;padding:14px 10px;font-size:16px;font-weight:800}.er6{display:flex;gap:18px;padding:2px 0 6px;flex-wrap:wrap}
+@media (min-width:700px){#ov{align-items:center}.mb{border-radius:16px}}
+@media (max-width:700px){
+ .cal{grid-template-columns:1fr}.wh,.day.e{display:none}.day{min-height:0;flex-direction:row;flex-wrap:wrap;align-items:center}.dn span{display:inline}.dn{min-width:70px}
+ .chip{width:auto;min-width:100px}
+ .row{grid-template-columns:1fr auto}.dts{grid-column:1/-1}
+}
+</style></head><body>
+<header><div class="hw"><div class="hr"><h1>スタッフ管理<small id="sub"></small></h1><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end"><span id="sv" style="white-space:nowrap" class="mut" style="font-size:12px"></span><button class="btn" id="csvb">⇅ CSV</button><button class="btn p" id="newst">＋ スタッフ登録</button></div></div>
+<div class="hnav"><button class="nb" data-nav="back" title="前の画面に戻る">← 戻る</button><button class="nb" data-nav="top" title="TOPへ">🏠 TOP</button><nav><button data-tab="roster" class="on">👥 スタッフ名簿</button><button data-tab="shift">📅 シフト表</button><button data-tab="find">🔎 業務で探す</button><button data-tab="client">🏢 クライアント</button></nav></div></div></header>
+<main id="main"><p class="mut" style="padding:14px">⏳ 読み込み中…（ずっとこの表示の場合は、ブラウザを最新版に更新するか、SafariやChromeで開き直してください）</p></main>
+<footer id="ft"></footer>
+<div id="toast" hidden></div>
+<div id="ov" hidden><div class="mb"><button class="x" aria-label="閉じる">✕</button><div id="mc"></div></div></div>
+<script>
+window.__ready=false;window.addEventListener('error',function(e){if(window.__ready)return;var m=document.getElementById('main');if(m)m.innerHTML='<div style="padding:14px;color:#b91c1c"><b>表示中にエラーが起きました</b><br>'+String(e.message||e)+'<br><small>'+navigator.userAgent+'</small><br>ブラウザを最新にして、SafariやChromeで開き直してください。</div>'});
+let D0={meta:{updated:''},roster:[],months:[],shifts:[]},STATE={OV:null,CN:null,CL:null};
+const IS_PC=!!(window.matchMedia&&matchMedia('(pointer:fine)').matches);
+const __offs=[];function on(t,f,o){document['addEventListener'](t,f,o);__offs.push(()=>document['removeEventListener'](t,f,o))}function offAll(){__offs.splice(0).forEach(f=>f())}
+/* ===== 保存先：Netlify（Functions + Blobs）の共有データ。CSV全データ(CN)だけはこのPCのブラウザに保存 ===== */
+const STORE=(function(){const LSK='staffapp.key',LSCN='staffapp.cn',CH=100,chunk=id=>String(Math.floor(+id/CH)),sleep=ms=>new Promise(r=>setTimeout(r,ms)),J=JSON.stringify;
+ const S={tok:null,cid:Math.random().toString(36).slice(2,10),last:new Map(),timer:null,busy:false,again:false,seen:null,getState:null,stale:false,watching:false,text:'',idle:Date.now()};
+ const status=t=>{S.text=t;const e=document.getElementById('sv');if(e)e.textContent=t};
+ const net=async(route,body)=>{const LOC=window.APP_CONFIG&&window.APP_CONFIG.api==='local',API=LOC?'':((window.APP_CONFIG&&window.APP_CONFIG.api)||'').replace(/\/+$/,''),opt={method:'POST',headers:{'Authorization':'Bearer '+S.tok,'Content-Type':'application/json'},body:J(body||{})},r=await(LOC?localFetch(route,opt):fetch(API+'/api/'+route,opt));if(r.status===401)throw{code:'unauthorized'};if(!r.ok){let m='';try{const j=await r.json();m=j.message||j.error||''}catch(e){}throw{code:'http_'+r.status,message:m}}return r.json()};
+ const localCN=()=>{try{return JSON.parse(localStorage.getItem(LSCN)||'{}')}catch(e){return{}}};
+ function toDocs(st){const d=new Map(),OV=st.OV||{},CL=st.CL||[],staff={},cells={},sched={};
+  Object.values(OV.staff||{}).forEach(r=>{(staff[chunk(r.id)]=staff[chunk(r.id)]||{})[r.id]=r});Object.entries(staff).forEach(([c,m])=>d.set('staffc/'+c,{m}));
+  Object.entries(OV.cells||{}).forEach(([k,v])=>{const[id,mk,ci]=k.split('|');(cells[mk]=cells[mk]||{})[id+'|'+ci]=v});Object.entries(cells).forEach(([mk,m])=>d.set('cells/'+mk,{m}));
+  Object.entries(OV.colEdits||{}).forEach(([k,e])=>{const[mk,ci]=k.split('|');(sched[mk]=sched[mk]||{})['e'+ci]=e});Object.entries(OV.colAdds||{}).forEach(([mk,a])=>{(a||[]).forEach((x,i)=>{if(x)(sched[mk]=sched[mk]||{})['a'+i]=x})});Object.entries(sched).forEach(([mk,m])=>d.set('sched/'+mk,{m}));
+  d.set('meta/months',{list:OV.months||[]});CL.forEach(c=>d.set('closings/'+c.id,c));((st.CX&&st.CX.clients)||[]).forEach(c=>d.set('clients/'+c.id,c));((st.CX&&st.CX.links)||[]).forEach(l=>d.set('links/'+l.id,l));return d}
+ function fromDocs(m){const OV={staff:{},colEdits:{},colAdds:{},months:[],cells:{}},CL=[],CX={clients:[],links:[]};
+  m.forEach((b,p)=>{const[c,id]=p.split('/');
+   if(c==='staffc')Object.entries(b.m||{}).forEach(([k,r])=>{if(r)OV.staff[k]=r});
+   else if(c==='cells')Object.entries(b.m||{}).forEach(([k,v])=>{if(v!==null){const[sid,ci]=k.split('|');OV.cells[sid+'|'+id+'|'+ci]=v}});
+   else if(c==='sched'){const mm=b.m||{},ks=Object.keys(mm),ph=()=>({day:1,site:'',raw:'',need:0,del:true});if(ks.length){ks.forEach(k=>{const v=mm[k];if(!v)return;if(k[0]==='e')OV.colEdits[id+'|'+k.slice(1)]=v;else if(k[0]==='a'){(OV.colAdds[id]=OV.colAdds[id]||[])[+k.slice(1)]=v}});if(OV.colAdds[id])for(let i=0;i<OV.colAdds[id].length;i++)if(!OV.colAdds[id][i])OV.colAdds[id][i]=ph()}else{Object.entries(b.edits||{}).forEach(([ci,e])=>{OV.colEdits[id+'|'+ci]=e});if((b.adds||[]).length)OV.colAdds[id]=b.adds.map(x=>x||ph())}}
+   else if(p==='meta/months')OV.months=b.list||[];else if(c==='closings')CL.push(b);else if(c==='clients')CX.clients.push(b);else if(c==='links')CX.links.push(b)});
+  CL.sort((a,b)=>(a.date||'').localeCompare(b.date||''));return{OV,CL,CX}}
+ const isMap=p=>/^(staffc|cells|sched)\//.test(p);
+ async function flush(){S.timer=null;if(!S.getState)return;if(S.busy){S.again=true;return}S.busy=true;status('☁ 保存中…');
+  try{do{S.again=false;const want=toDocs(S.getState()),ops=[],after=[];
+   for(const[p,body]of want){const prev=S.last.get(p),a=J(body);if(prev!==undefined&&J(prev)===a)continue;
+    if(isMap(p)&&prev){const pm=prev.m||{},ch={};Object.entries(body.m).forEach(([k,v])=>{if(J(pm[k])!==J(v))ch[k]=v});Object.keys(pm).forEach(k=>{if(!(k in body.m))ch[k]=null});if(Object.keys(ch).length)ops.push({op:'merge',path:p,data:{m:ch}})}
+    else ops.push({op:'set',path:p,data:body});after.push([p,JSON.parse(a)])}
+   for(const[p,prev]of[...S.last]){if(want.has(p))continue;if(/^(closings|clients|links)\//.test(p)){ops.push({op:'delete',path:p});after.push([p,null])}else if(isMap(p)&&prev.m&&Object.keys(prev.m).length){const ch={};Object.keys(prev.m).forEach(k=>ch[k]=null);ops.push({op:'merge',path:p,data:{m:ch}});after.push([p,{m:{}}])}}
+   for(let i=0;i<ops.length;i+=40){const r=await net('batch',{cid:S.cid,ops:ops.slice(i,i+40)});if(r.rev)S.seen=r.rev.t}
+   after.forEach(([p,b])=>b===null?S.last.delete(p):S.last.set(p,b));
+  }while(S.again);status('☁ 同期済み')}
+  catch(e){status('⚠ 同期エラー（'+((e&&e.code)||(e&&e.message)||e)+'）');if(e&&e.code==='unauthorized')alert('アクセスキーが無効です。共有されたURLから開き直してください。')}finally{S.busy=false}}
+ const api={get mode(){return 'cloud'},get stale(){return S.stale},set stale(v){S.stale=v},needInit:false,get text(){return S.text},set getState(f){S.getState=f},status,localCN,
+  captureKey(){if(window.APP_CONFIG&&window.APP_CONFIG.api==='local'){S.tok='local';return 'local'}const u=new URL(location.href);let k=u.searchParams.get('k');if(k){try{localStorage.setItem(LSK,k)}catch(e){}u.searchParams.delete('k');try{history.replaceState(null,'',u.pathname+u.search+u.hash)}catch(e){}}else{try{k=localStorage.getItem(LSK)}catch(e){}}S.tok=k;return k},
+  forgetKey(){try{localStorage.removeItem(LSK)}catch(e){}},setKey(k){S.tok=k;try{localStorage.setItem(LSK,k)}catch(e){}},
+  async loadCloud(withBase){const j=await net('state',{withBase:!!withBase}),m=new Map(Object.entries(j.docs||{}));S.last.clear();m.forEach((b,p)=>S.last.set(p,JSON.parse(J(b))));if(j.rev)S.seen=j.rev.t;return{state:fromDocs(m),base:j.base}},
+  sync(w){if(w==='cn'){try{localStorage.setItem(LSCN,J(S.getState().CN))}catch(e){status('⚠ この端末に保存できません')}return}clearTimeout(S.timer);status('☁ 保存待ち…');S.timer=setTimeout(flush,600)},
+  async flushNow(){clearTimeout(S.timer);S.timer=null;await flush()},
+  show(){if(S.timer||S.busy)return;status('☁ 同期済み')},apply(){return api.applyRemote()},
+  watch(){if(S.watching)return;S.watching=true;
+   const remote=async()=>{const m=document.getElementById('ov'),a=document.activeElement,busy=(m&&!m.hidden)||(a&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName));if(busy){S.stale=true;status('🔄 他の端末で更新あり（閉じると反映）');return}await api.applyRemote()};
+   const check=async()=>{if(S.busy||S.timer||document.hidden)return;if(Date.now()-S.idle>300000)return;try{const j=await net('rev'),r=j.rev;if(r&&r.by!==S.cid&&r.t!==S.seen){S.seen=r.t;remote()}}catch(e){}};
+   const touch=()=>{const was=Date.now()-S.idle>300000;S.idle=Date.now();if(was)check()};
+   ['click','keydown','touchstart'].forEach(t=>document['addEventListener'](t,touch,{passive:true}));
+   document['addEventListener']('visibilitychange',()=>{if(!document.hidden){S.idle=Date.now();check()}});setInterval(check,15000)},
+  async applyRemote(){S.stale=false;await flush();const c=await api.loadCloud(false);STATE={OV:c.state.OV,CN:localCN(),CL:c.state.CL,CX:c.state.CX};boot(D0)}};
+ return api})();
+function start(){const m=document.getElementById('main'),box=(t,x)=>{m.innerHTML=`<div class="box" style="max-width:440px;margin:30px auto"><b>${t}</b><p class="mut" style="margin:6px 0">${x}</p></div>`};
+ const load=async()=>{m.innerHTML='<p class="mut" style="padding:14px">☁ データを読み込み中…</p>';
+  try{const c=await STORE.loadCloud(true);D0=Object.assign({roster:[]},c.base||{});D0.roster=[];STATE={OV:c.state.OV,CN:STORE.localCN(),CL:c.state.CL,CX:c.state.CX};boot(D0);STORE.watch()}
+  catch(e){const code=(e&&e.code)||'';if(code==='unauthorized'){STORE.forgetKey();askKey('アクセスキーが違います。もう一度入力してください。')}else if(code==='http_429')askKey('試行回数が多すぎます。10分ほど待ってからお試しください。');else{box('⚠ サーバーに接続できません','通信状況を確認して、ページを再読み込みしてください。<br><small>'+esc(String(code||'')+' '+String((e&&e.message)||''))+'</small>'+(/^http_5/.test(code)?'<br><small>サーバー側（Netlify Functions / Blobs）の設定が未完了の可能性があります。README の【B】（CLI）で、Functions付きで再デプロイしてください。</small>':''))}}};
+ const askKey=msg=>{m.innerHTML=`<div class="box" style="max-width:440px;margin:30px auto"><b style="font-size:16px">🔑 アクセスキーを入力してください</b><p class="mut" style="margin:6px 0 10px">チームで共有されているアクセスキーを入力すると開きます。この端末では、次回から入力は不要です。</p><input type="password" id="kin" placeholder="アクセスキー" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false"><label class="chk" style="margin-top:8px"><input type="checkbox" id="kshow"> キーを表示する</label><p class="bad" id="kmsg" style="min-height:1.3em;margin:8px 0 0">${msg||''}</p><button class="btn p" id="kgo" style="width:100%;margin-top:6px;padding:12px">開く</button></div>`;
+  const go=()=>{const v=document.getElementById('kin').value.trim();if(!v){document.getElementById('kmsg').textContent='アクセスキーを入力してください。';return}STORE.setKey(v);load()};
+  document.getElementById('kgo').onclick=go;document.getElementById('kin').onkeydown=e=>{if(e.key==='Enter')go()};document.getElementById('kshow').onchange=e=>{document.getElementById('kin').type=e.target.checked?'text':'password'};document.getElementById('kin').focus()};
+ if(!STORE.captureKey())return askKey('');load()}
+function boot(Din){offAll();const D=JSON.parse(JSON.stringify(Din));
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const nz=s=>String(s||'').normalize('NFKC').replace(/[\u3041-\u3096]/g,c=>String.fromCharCode(c.charCodeAt(0)+96)).replace(/\s/g,'').toLowerCase();
+const WD='日月火水木金土',today=new Date();today.setHours(0,0,0,0);
+const R=D.roster,M=D.months,byId=new Map(R.map(r=>[r.id,r]));
+const STC={'確定':'ok','〇':'can','打診':'ask','×':'ng','△':'tri','当日欠':'bad','お断り':'bad','-':'ng'},SYM={'確定':'●','〇':'〇','打診':'打','×':'×','△':'△','当日欠':'欠','お断り':'断','-':'-'};
+const GR=['AA','A+','A','B','C','D','他'],RK={AA:0,'A+':1,A:2,B:3,C:4,D:5,'他':6};
+const gk=g=>{g=(g||'').normalize('NFKC');return GR.includes(g)&&g!=='他'?g:'他'};
+const gp=r=>`<span class="gp g-${gk(r.grade)}">${esc(r.grade||'未')}</span>`;
+const toast=m=>{const e=$('#toast');e.textContent=m;e.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>e.hidden=true,2400)};
+const KEY='staffapp.v1',NB=M.length;
+let OV={staff:{},colEdits:{},colAdds:{},months:[],cells:{}};
+OV=Object.assign(OV,STATE.OV||{});STORE.getState=()=>({OV,CN,CL,CX});
+const save=()=>STORE.sync('ov');
+const CN_HEAD=["ｽﾀｯﾌ番号", "登録日", "スタッフ区分", "担当者名", "氏名(ｶﾅ)", "氏名(漢字)", "性別", "配偶者", "生年月日", "年齢", "血液型", "郵便番号", "住所1", "住所2", "住所3", "最寄駅", "沿線1", "沿線2", "電話番号", "電話番号メモ", "携帯電話", "携帯電話メモ", "緊急連絡先番号", "緊急連絡先メモ", "緊急連絡先住所", "ﾒｰﾙｱﾄﾞﾚｽ", "携帯ﾒｰﾙ", "入社日", "退職", "退職日", "最終学歴", "初回稼働日", "直近稼働日", "累積稼動日数", "稼動履歴日数", "定出率", "業務実績1", "業務実績2", "業務実績3", "業務実績4", "業務実績5", "スタッフランク", "所定内日給 (円)", "所定内時給 (円)", "残業時給 (円)", "特技1", "特技2", "特技3", "特技4", "所持資格1", "資格取得日1", "所持資格2", "資格取得日2", "所持資格3", "資格取得日3", "所持資格4", "資格取得日4", "所持資格5", "引当メモ", "支払種別", "給与支払日1", "銀行番号", "銀行名", "支店番号", "支店名", "区分", "口座番号", "口座名義人", "税区分", "日額表", "扶養家族人数", "住民税区分", "住民税(6月分)", "住民税(7月以降)", "世帯主の氏名", "本人－配偶者あり", "年調なし", "他住所－住民税納付先", "他住所－年末調整", "源泉徴収票－摘要欄に使用する", "保険料率", "雇用保険加入状況", "お仕事情報希望", "希望派遣期間", "希望勤務地1", "曜日条件ー月曜_残業", "曜日条件ー月曜_メモ", "曜日条件ー火曜", "曜日条件ー火曜_残業", "曜日条件ー火曜_メモ", "曜日条件ー水曜", "曜日条件ー水曜_残業", "曜日条件ー水曜_メモ", "曜日条件ー木曜", "曜日条件ー木曜_残業", "曜日条件ー木曜_メモ", "曜日条件ー金曜", "曜日条件ー金曜_残業", "曜日条件ー土曜", "曜日条件ー土曜_残業", "募集媒体", "募集媒体掲載日付", "メモ", "60歳以上定年退職者", "日雇派遣の例外－要件", "日雇派遣の例外－確認書類", "契約期間", "退職理由－要因", "退職理由－事由", "就業継続", "外国人雇用－国籍地域", "運転免許－種類", "運転免許－期限", ""],CN_N=113,CN_DEF={"スタッフ区分": "日払スタッフ", "配偶者": "無し", "退職": "在職", "累積稼動日数": "0", "稼動履歴日数": "0", "定出率": "0", "所定内日給 (円)": "0", "所定内時給 (円)": "0", "残業時給 (円)": "0", "支払種別": "日払", "区分": "普通", "税区分": "丙欄", "日額表": "使用", "扶養家族人数": "0", "住民税区分": "特別徴収", "住民税(6月分)": "0", "住民税(7月以降)": "0", "本人－配偶者あり": "無", "年調なし": "有", "他住所－住民税納付先": "使用しない", "他住所－年末調整": "使用しない", "源泉徴収票－摘要欄に使用する": "使用しない", "保険料率": "埼玉", "雇用保険加入状況": "資格なし", "お仕事情報希望": "希望する", "曜日条件ー月曜_残業": "不可", "曜日条件ー火曜": "なし", "曜日条件ー火曜_残業": "不可", "曜日条件ー水曜": "なし", "曜日条件ー水曜_残業": "不可", "曜日条件ー木曜": "なし", "曜日条件ー木曜_残業": "不可", "曜日条件ー金曜": "なし", "曜日条件ー金曜_残業": "不可", "曜日条件ー土曜": "なし", "曜日条件ー土曜_残業": "不可", "60歳以上定年退職者": "非対象", "日雇派遣の例外－要件": "該当なし", "契約期間": "有期", "就業継続": "希望する", "外国人雇用－国籍地域": "日本"},CI={};CN_HEAD.slice(0,CN_N).forEach((h,i)=>CI[h]=i);
+const CKEY='staffapp.cn';let CN=STATE.CN||{};
+const saveCn=()=>STORE.sync('cn');
+const toHalf=s=>String(s||'').replace(/[Ａ-Ｚａ-ｚ０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace('＋','+'),toFull=s=>String(s||'').replace(/[A-Za-z0-9]/g,c=>String.fromCharCode(c.charCodeAt(0)+0xFEE0));
+const gradeToRank=g=>{const m=toHalf(g).toUpperCase().charAt(0);return m&&'ABCD'.includes(m)?toFull(m):''};
+const prefOf=a=>{const m=String(a||'').match(/^(北海道|東京都|京都府|大阪府|.{2,3}県)/);return m?m[1]:''};
+const isoFromCn=s=>{const m=String(s||'').match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);return m?`${m[1]}-${('0'+m[2]).slice(-2)}-${('0'+m[3]).slice(-2)}`:''};
+const cnFromIso=s=>{const m=String(s||'').match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);return m?`${m[1]}/${+m[2]}/${+m[3]}`:String(s||'').trim()};
+const ageFromIso=s=>{const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})/);if(!m)return'';const t=new Date();let a=t.getFullYear()-+m[1];if(t.getMonth()+1<+m[2]||(t.getMonth()+1===+m[2]&&t.getDate()<+m[3]))a--;return String(a)};
+function newRow(){const row=Array(CN_N).fill(''),n=new Date(),d=`${n.getFullYear()}/${n.getMonth()+1}/${n.getDate()}`;Object.entries(CN_DEF).forEach(([k,v])=>row[CI[k]]=v);['登録日','入社日','募集媒体掲載日付'].forEach(k=>row[CI[k]]=d);return row}
+function applyRec(row,rec,isNew){const set=(k,v)=>{row[CI[k]]=v};
+ if(rec.name!==undefined)set('氏名(漢字)',rec.name);if(rec.kana!==undefined)set('氏名(ｶﾅ)',rec.kana);if(rec.sex!==undefined)set('性別',rec.sex);if(rec.station!==undefined)set('最寄駅',rec.station);
+ if(rec.zip!==undefined)set('郵便番号',rec.zip);if(rec.addr!==undefined){set('住所1',rec.addr);set('住所2','')}if(rec.type)set('スタッフ区分',rec.type);
+ if(rec.birth){set('生年月日',cnFromIso(rec.birth));const a=ageFromIso(rec.birth);if(a!=='')set('年齢',a)}else if(rec.age!==undefined&&rec.age!=='')set('年齢',String(rec.age));
+ const twin=(m,s,v)=>{const om=row[CI[m]]||'',os=row[CI[s]]||'';if(isNew||os===''||os===om)set(s,v);set(m,v)};
+ if(rec.tel!==undefined)twin('電話番号','携帯電話',rec.tel);if(rec.mail!==undefined)twin('ﾒｰﾙｱﾄﾞﾚｽ','携帯ﾒｰﾙ',rec.mail);
+ if(rec.grade!==undefined){set('スタッフランク',gradeToRank(rec.grade))}}
+const recFromCn=(row,old)=>{const g=k=>(row[CI[k]]||'').trim(),rank=g('スタッフランク'),app=old&&old.grade||'';
+ return{id:+g('ｽﾀｯﾌ番号'),name:g('氏名(漢字)'),kana:g('氏名(ｶﾅ)'),age:g('年齢')===''?'':+g('年齢'),sex:g('性別'),grade:app&&gradeToRank(app)===rank?app:(rank?toHalf(rank):app),pref:prefOf(g('住所1')),station:g('最寄駅'),birth:isoFromCn(g('生年月日')),tel:g('電話番号'),mail:g('携帯ﾒｰﾙ')||g('ﾒｰﾙｱﾄﾞﾚｽ'),zip:g('郵便番号'),addr:g('住所1')+g('住所2'),type:g('スタッフ区分'),retired:g('退職')==='退職',joined:g('入社日'),synced:true}};
+const SF2=['id','name','kana','age','sex','station','birth','tel','mail','grade','pref','zip','addr','type','retired','joined','synced'];
+const pick=r=>{const o={};SF2.forEach(k=>{if(r[k]!==undefined)o[k]=r[k]});return o};
+function buildRow(r){let row=CN[r.id];if(row){row=row.slice();while(row.length<CN_N)row.push('');return row}
+ row=newRow();row[CI['ｽﾀｯﾌ番号']]=String(r.id);applyRec(row,{name:r.name,kana:r.kana,sex:r.sex,station:r.station,zip:r.zip,addr:r.addr!==undefined?r.addr:r.pref,type:r.type,birth:r.birth,age:r.age,tel:r.tel,mail:r.mail,grade:r.grade},true);return row}
+/* Shift-JIS(Windows-31J) エンコーダ：ブラウザのデコーダから逆引き表を作る */
+let SJ=null;
+function sjMap(){if(SJ)return SJ;SJ=new Map();const dec=new TextDecoder('shift_jis');
+ for(let b=0x20;b<=0x7E;b++)SJ.set(String.fromCharCode(b),[b]);
+ for(let b=0xA1;b<=0xDF;b++){const c=dec.decode(new Uint8Array([b]));if(c!=='\uFFFD')SJ.set(c,[b])}
+ const L1=[],L2=[0xED,0xEE],L3=[0xFA,0xFB,0xFC];for(let l=0x81;l<=0xFC;l++){if((l>=0xA0&&l<=0xDF)||l===0xED||l===0xEE||l>=0xFA)continue;L1.push(l)}
+ [L1,L2,L3].forEach(L=>L.forEach(l=>{for(let t=0x40;t<=0xFC;t++){if(t===0x7F)continue;const c=dec.decode(new Uint8Array([l,t]));if(c.length===1&&c!=='\uFFFD'&&!SJ.has(c))SJ.set(c,[l,t])}}));return SJ}
+function sjEncode(s){const m=sjMap(),out=[],miss=new Set();for(const ch of s){const b=m.get(ch)||m.get(({'\u00a0':' ','\u2212':'\uff0d','\u2013':'\uff0d','\u2014':'\u2015','\u2010':'-'})[ch]);if(b)out.push(...b);else if(ch==='\r'||ch==='\n')out.push(ch.charCodeAt(0));else{miss.add(ch);out.push(0x3F)}}return{bytes:new Uint8Array(out),miss:[...miss]}}
+const normSite=s=>{let b=String(s||'').replace(/\n/g,'').trim().split(/[（(]/)[0].trim();b={'家政':'家政大学','ジェフ':'JEF','ZOZOマリン':'ZOZO'}[b]||b;if(b.includes('タワレコ'))b='タワレコ';if(b.startsWith('JEF'))b='JEF';return b};
+const wdOf=(key,d)=>{const[y,m]=key.split('-');return WD[new Date(+y,m-1,d).getDay()]},daysIn=key=>{const[y,m]=key.split('-');return new Date(+y,+m,0).getDate()};
+const BASE=M.map(m=>m.cols.length);
+OV.months.forEach(k=>{if(!M.some(m=>m.key===k)){const[y,mo]=k.split('-');M.push({key:k,label:`${y}年${+mo}月`,cols:[]});BASE.push(0)}});
+M.forEach(m=>{Object.entries(OV.colEdits).forEach(([k,e])=>{const[mk,ci]=k.split('|');if(mk===m.key&&m.cols[ci])Object.assign(m.cols[ci],e)});(OV.colAdds[m.key]||[]).forEach(e=>e&&m.cols.push({...e}));m.cols.forEach(c=>{c.wd=wdOf(m.key,c.day);if(c.raw===undefined)c.raw=c.site;c.ev=c.ev||''})});
+const keyOf=r=>nz(r.id+r.name+r.kana+r.station+r.pref);
+const SF=['id','name','kana','age','sex','station','birth','tel','mail','grade'];
+Object.values(OV.staff).forEach(s=>{let r=byId.get(s.id);if(r)Object.assign(r,s);else{r={pref:'',ng:'',skills:{},...s,_new:1};R.push(r);byId.set(r.id,r)}});
+R.sort((a,b)=>a.id-b.id);R.forEach(r=>r._k=keyOf(r));
+const hist=new Map(),cell=new Map();
+const dt=(mi,ci)=>{const[y,m]=M[mi].key.split('-');return new Date(+y,m-1,M[mi].cols[ci].day)};
+const fd=(mi,ci)=>{const d=dt(mi,ci);return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`};
+const age=r=>{const b=new Date(r.birth);if(!r.birth||isNaN(b))return r.age||'';let a=today.getFullYear()-b.getFullYear();if(today<new Date(today.getFullYear(),b.getMonth(),b.getDate()))a--;return a};
+function setCode(id,mi,ci,code){const k=mi+'_'+ci;const a=(cell.get(k)||[]).filter(x=>x[0]!==id);if(code)a.push([id,code]);cell.set(k,a);const h=(hist.get(id)||[]).filter(x=>!(x.mi===mi&&x.ci===ci));if(code)h.push({mi,ci,code});hist.set(id,h);M[mi].cols[ci].dec=a.filter(x=>x[1]==='確定').length}
+D.shifts.forEach(([id,mi,ci,c])=>{if(!M[mi].cols[ci].del){const k=mi+'_'+ci;(hist.get(id)||hist.set(id,[]).get(id)).push({mi,ci,code:c});(cell.get(k)||cell.set(k,[]).get(k)).push([id,c])}});
+Object.entries(OV.cells).forEach(([k,code])=>{const[id,mk,ci]=k.split('|'),mi=M.findIndex(m=>m.key===mk);if(mi>=0&&M[mi].cols[+ci]&&!M[mi].cols[+ci].del&&byId.has(+id))setCode(+id,mi,+ci,code)});
+const nowKey=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`,_c=M.findIndex(m=>m.key===nowKey),LAST=_c>=0?_c:NB-1;
+let active=new Set(),SC={},SITES=[];
+function rebuild(){active=new Set();SC={};M.forEach((m,mi)=>m.cols.forEach((c,ci)=>{if(c.del)return;(cell.get(mi+'_'+ci)||[]).forEach(([id,v])=>{if(v==='確定'){if(mi===LAST)active.add(id);if(c.site)SC[c.site]=(SC[c.site]||0)+1}})}));SITES=Object.entries(SC).sort((a,b)=>b[1]-a[1])}
+rebuild();
+const MO=()=>M.map((_,i)=>i).sort((a,b)=>M[a].key<M[b].key?-1:M[a].key>M[b].key?1:0);
+const st={tab:'roster',q:'',grades:new Set(),sex:'',act:false,ret:false,unp:false,nsl:false,cq:'',cf:'all',cv:'list',cm:'',ce:'',cmon:'',cop:new Set(),pm:'amt',sopen:new Set(),lim:60,mon:LAST,view:'cal',site:'',sq:'',rq:'',rsite:'',rg:new Set(),sort:'n',edit:false,pin:new Set(),ps:'',sm:false};if(window.__st)Object.assign(st,window.__st);window.__st=st;
+$('#sub').textContent=`最新データ：${M[LAST].label}（Excel更新 ${D.meta.updated}）`;
+$('#ft').innerHTML=`取込元：スタッフ管理シート ${M[MO()[0]].label}〜${M[NB-1].label}。${STORE.mode==='cloud'?'データはサーバー（Netlify）に保存され、このURLを開いたどの端末でも同じ内容になります。CSVの取り込み・出力はPCのみです。':'登録・編集・CSVの内容はこのブラウザ内にのみ保存され、外部には送信されません。'}個人情報を含むためご注意ください。`;
+const refresh=()=>{if(st.tab==='shift')updShift();else if(st.tab==='find')updFind();else updRoster()};
+function assign(id,mi,ci,code){setCode(id,mi,ci,code);OV.cells[`${id}|${M[mi].key}|${ci}`]=code;rebuild();save()}
+const persistCol=(mi,ci)=>{const m=M[mi],c=m.cols[ci],e={day:c.day,site:c.site,raw:c.raw,need:c.need,client:c.client||'',detail:c.detail||'',invDone:!!c.invDone,payDone:!!c.payDone,tStart:c.tStart||'',tEnd:c.tEnd||'',del:!!c.del};if(ci<BASE[mi])OV.colEdits[m.key+'|'+ci]=e;else(OV.colAdds[m.key]=OV.colAdds[m.key]||[])[ci-BASE[mi]]={...e,dec:0};save()};
+
+/* ---------- 名簿 ---------- */
+const card=r=>{const a=age(r),sk=Object.entries(r.skills||{}).filter(([k,v])=>v.startsWith('〇')||(k==='研修'&&v==='済')).map(([k])=>k),n=(hist.get(r.id)||[]).filter(h=>h.mi===LAST&&h.code==='確定').length;
+return `<div class="card" data-id="${r.id}"><div class="top"><span class="id">#${r.id}</span>${gp(r)}</div><b>${esc(r.name)}</b><small>${esc(r.kana)}</small><div class="mut">${esc([r.sex,a!==''?a+'歳':''].filter(Boolean).join(' · '))}</div><div class="mut">🚉 ${esc(r.station||'—')}</div><div class="tags">${payBadge(r.id)}${r.retired?'<i class="pill st-bad">退職</i>':''}${r._new&&!r.synced?'<i class="pill st-tri">登録</i>':''}${n?`<i class="pill st-ok">今月 ${n}日</i>`:''}${sk.map(k=>`<i>${esc(k)}</i>`).join('')}</div></div>`};
+function rRoster(){$('#main').innerHTML=`<div class="bar"><input id="q" type="search" placeholder="🔍 氏名・カナ・ID・最寄り駅で検索" value="${esc(st.q)}" autocomplete="off"><div class="chips">${GR.map(g=>`<button class="fc${st.grades.has(g)?' on':''}" data-g="${g}">${g==='他'?'その他/未評価':g}</button>`).join('')}<button class="fc${st.act?' on':''}" data-act="1">今月出勤あり</button><button class="fc${st.ret?' on':''}" data-ret="1">在職のみ</button><select id="sx"><option value="">性別：すべて</option><option${st.sex==='男'?' selected':''}>男</option><option${st.sex==='女'?' selected':''}>女</option></select></div></div><div id="cnt" class="mut" style="margin-bottom:8px"></div><div id="res" class="grid"></div><button id="more" class="more" hidden>もっと見る</button>`;updRoster()}
+const rosterList=()=>{const q=nz(st.q);return R.filter(r=>(!q||r._k.includes(q))&&(!st.grades.size||st.grades.has(gk(r.grade)))&&(!st.sex||r.sex===st.sex)&&(!st.act||active.has(r.id))&&(!st.ret||!r.retired))};
+function updRoster(){const L=rosterList();
+$('#cnt').textContent=`${L.length}名 / 全${R.length}名`;$('#res').innerHTML=L.slice(0,st.lim).map(card).join('')||(R.length?'<p class="mut">該当するスタッフがいません</p>':'<div class="box"><b>スタッフ名簿が空です</b><br>右上の「⇅ CSV」から、キャスナビの「登録全データ出力」CSVを取り込んでください（ファイルはこのブラウザ内でのみ処理されます）。</div>');$('#more').hidden=L.length<=st.lim}
+
+/* ---------- シフト表 ---------- */
+function rShift(){const m=M[st.mon],sites=[...new Set(m.cols.filter(c=>!c.del).map(c=>c.site).filter(Boolean))],mx=st.view==='mx';
+$('#main').innerHTML=`<div class="bar"><div class="chips"><select id="mon">${MO().map(i=>`<option value="${i}"${i===st.mon?' selected':''}>${M[i].label}</option>`).join('')}</select><select id="ssel"><option value="">現場：すべて</option>${sites.map(s=>`<option${s===st.site?' selected':''}>${esc(s)}</option>`).join('')}</select><div class="seg"><button data-v="cal" class="${st.view==='cal'?'on':''}">カレンダー</button><button data-v="ls" class="${st.view==='ls'?'on':''}">一覧</button><button data-v="mx" class="${mx?'on':''}">担当表</button></div><button class="btn" id="sched">⚙ 現場スケジュール編集</button><button class="btn" data-sx="month">📥 Excel</button>${st.view!=='mx'?`<select id="sfil" style="width:auto"><option value="">表示：すべて</option><option value="inv"${st.sfil==='inv'?' selected':''}>🧾 請求書 未完了のみ</option><option value="pay"${st.sfil==='pay'?' selected':''}>💴 支払 未完了のみ</option></select>`:''}</div>${mx?`<div class="chips"><input id="sq" type="search" style="flex:1;min-width:180px" placeholder="🔍 担当表内をスタッフ名で絞り込み" value="${esc(st.sq)}"><button class="fc${st.edit?' on':''}" data-edit="1">✏️ 編集モード</button></div>`:''}${mx&&st.edit?`<div><input id="pq" type="search" placeholder="➕ 担当表に行を追加（スタッフ名・IDで検索）" autocomplete="off"><div id="pr" class="names" style="margin-top:6px"></div></div><p class="mut" style="margin:0">セルをクリックで切替：空 → 打診 → 〇 → 確定 → × → 空。列見出しをクリックすると、その現場の担当者をまとめて編集できます。</p>`:''}<div class="lg"><span class="pill st-ok">● 確定</span><span class="pill st-can">〇 可能</span><span class="pill st-ask">打 打診</span><span class="pill st-tri">△</span><span class="pill st-ng">× 不可</span><span class="pill st-bad">欠/断</span>${st.view==='cal'?'<span class="pill st-bad">赤＝人員不足</span><span class="pill st-ok">緑＝充足</span><span class="pill st-ok">🧾請求済／💴支払済</span><span class="pill st-ng">請求未／支払未</span>':''}</div></div><div id="res"></div>`;renderSel();updShift()}
+function updShift(){const s=$('.sc'),y=s&&s.scrollTop,x=s&&s.scrollLeft;$('#res').innerHTML=st.view==='cal'?cal():st.view==='ls'?lst():mat();const n=$('.sc');if(n&&s){n.scrollTop=y;n.scrollLeft=x}}
+function cal(){const m=M[st.mon],[y,mo]=m.key.split('-').map(Number),first=new Date(y,mo-1,1).getDay(),n=new Date(y,mo,0).getDate(),by={};
+m.cols.forEach((c,i)=>{if(!c.del&&(!st.site||c.site===st.site)&&(st.sfil!=='inv'||!c.invDone)&&(st.sfil!=='pay'||!c.payDone))(by[c.day]=by[c.day]||[]).push([c,i])});
+let h='<div class="cal">'+[...WD].map((w,i)=>`<div class="wh w${i}">${w}</div>`).join('')+'<div class="day e"></div>'.repeat(first);
+for(let d=1;d<=n;d++){const t=new Date(y,mo-1,d),L=by[d]||[];h+=`<div class="day${+t===+today?' today':''}${L.length?'':' e'}"><div class="dn">${d}<span>（${WD[t.getDay()]}）</span></div>`+L.map(([c,i])=>{const left=c.need-c.dec,k=c.need===0&&c.dec===0?'ng':left>0?'bad':'ok';return `<button class="chip st-${k}${(st.sel&&st.sel.mi===st.mon&&st.sel.cols.has(i))?' sel':''}" data-chip="1" data-m="${st.mon}" data-c="${i}" title="${esc(c.raw+(c.client?' / '+c.client+(c.detail?'・'+c.detail:''):''))}"><span>${esc(c.site||'—')}</span><b>${c.dec}/${c.need}${left>0?` 残${left}`:''}</b>${c.client?`<small class="cl">🏢 ${esc(c.client)}${c.detail?'・'+esc(c.detail):''}</small>`:''}${c.tStart||c.tEnd?`<small class="tm">🕘 ${esc(c.tStart||'')}～${esc(c.tEnd||'')}</small>`:''}${stBadge(c,st.mon,i)}</button>`}).join('')+`<button class="addd" data-addday="${d}" title="この日に現場を追加">＋</button></div>`}
+return h+'</div>'+(m.cols.some(c=>!c.del)?'':'<p class="mut">この月の現場はまだありません。「＋」または「現場スケジュール編集」から追加できます。</p>')}
+function lst(){const m=M[st.mon],L=m.cols.map((c,i)=>[c,i]).filter(([c])=>!c.del&&(!st.site||c.site===st.site)&&(st.sfil!=='inv'||!c.invDone)&&(st.sfil!=='pay'||!c.payDone)).sort((a,b)=>a[0].day-b[0].day||a[1]-b[1]);
+ if(!L.length)return '<p class="mut">該当する現場がありません。「現場スケジュール編集」から追加できます。</p>';
+ const tg=(f,c,i)=>{const d=f==='inv'?c.invDone:c.payDone;return `<button class="tgb ${d?'ok':''}" data-tg="${f}|${st.mon}|${i}">${d?'✔ ':''}${f==='inv'?'請求書':'支払'}${d?'完了':'未'}</button>`};
+ return `<div class="sc"><table class="lst"><thead><tr><th>日付</th><th>現場</th><th class="hm">クライアント・詳細</th><th class="hm">時間</th><th>請求書</th><th>支払</th></tr></thead><tbody>${L.map(([c,i])=>`<tr><td>${c.day}日（${esc(c.wd)}）</td><td><button class="lk" data-m="${st.mon}" data-c="${i}">${esc(c.site||'—')}</button><br><small class="mut">${c.dec}/${c.need}名</small></td><td class="hm">${esc(c.client||'')}${c.detail?'・'+esc(c.detail):''}</td><td class="hm">${c.tStart||c.tEnd?esc(c.tStart||'')+'～'+esc(c.tEnd||''):''}</td><td>${tg('inv',c,i)}</td><td>${tg('pay',c,i)}</td></tr>`).join('')}</tbody></table></div>`}
+function mat(){const m=M[st.mon],cols=m.cols.map((c,i)=>[c,i]).filter(([c])=>!c.del&&(!st.site||c.site===st.site)).sort((a,b)=>a[0].day-b[0].day||a[1]-b[1]),q=nz(st.sq),rows=[];
+R.forEach(r=>{if(q&&!nz(r.name+r.kana+r.id).includes(q))return;const o={};(hist.get(r.id)||[]).forEach(h=>{if(h.mi===st.mon)o[h.ci]=h.code});const cs=cols.map(([c,i])=>o[i]||'');if(st.pin.has(r.id)||cs.some(v=>v&&v!=='×'&&v!=='-'))rows.push([r,cs,cs.filter(v=>v==='確定').length])});
+rows.sort(st.edit?(a,b)=>a[0].id-b[0].id:(a,b)=>b[2]-a[2]||a[0].id-b[0].id);
+const th=cols.map(([c,i])=>`<th data-m="${st.mon}" data-c="${i}" style="cursor:pointer"><div class="cv"><b class="${c.wd==='日'?'w0':c.wd==='土'?'w6':''}">${c.day}</b><br><small>${esc(c.wd)}</small><br><span>${esc(c.site||'—')}</span></div></th>`).join('');
+const sub=(lab,f)=>`<tr><th class="nm1">${lab}</th>${cols.map(([c,i])=>`<td>${f(c,i)}</td>`).join('')}</tr>`;
+if(!cols.length)return '<p class="mut">この月（または現場）の予定がありません。「現場スケジュール編集」から追加できます。</p>';
+return `<p class="mut">${rows.length}名${st.edit?'（編集モード）':'（確定・可能・打診のいずれかがある人のみ表示）'}</p><div class="sc"><table class="mx"><thead><tr><th class="nm1">スタッフ</th>${th}</tr></thead><tbody>${sub('必要',c=>c.need)}${sub('請求書',(c,i)=>`<i class="bd tg ${c.invDone?'ok':'ng'}" data-tg="inv|${st.mon}|${i}">${c.invDone?'済':'未'}</i>`)}${sub('支払',(c,i)=>`<i class="bd tg ${c.payDone?'ok':'ng'}" data-tg="pay|${st.mon}|${i}">${c.payDone?'済':'未'}</i>`)}${sub('決定',c=>c.dec)}${sub('残',c=>{const l=c.need-c.dec;return l>0?`<b style="color:var(--badf)">${l}</b>`:l<0?`<b style="color:var(--askf)">${l}</b>`:'0'})}`+
+rows.map(([r,cs])=>`<tr><th class="nm1" data-id="${r.id}">${esc(r.name)} ${gp(r)}</th>${cs.map((v,j)=>{const ci=cols[j][1];return v||st.edit?`<td class="c st-${v?STC[v]||'ng':'e'}"${st.edit?` data-sid="${r.id}"`:''} data-m="${st.mon}" data-c="${ci}">${v?SYM[v]||esc(v):'·'}</td>`:'<td></td>'}).join('')}</tr>`).join('')+'</tbody></table></div>'}
+
+/* ---------- 業務で探す（逆引き） ---------- */
+function rFind(){$('#main').innerHTML=`<div class="bar"><input id="rq" type="text" list="sl" placeholder="🔎 業務名を入力（例：タワレコ、家政大学、ロッテ）" value="${esc(st.rsite||st.rq)}" autocomplete="off"><datalist id="sl">${SITES.map(([s])=>`<option value="${esc(s)}">`).join('')}</datalist><div class="chips" id="sc">${SITES.slice(0,16).map(([s,n])=>`<button class="fc${st.rsite===s?' on':''}" data-site="${esc(s)}">${esc(s)}<small>${n}</small></button>`).join('')}</div><div class="chips"><span class="mut">評価：</span>${GR.map(g=>`<button class="fc${st.rg.has(g)?' on':''}" data-rg="${g}">${g==='他'?'その他':g}</button>`).join('')}<select id="so"><option value="n">並び順：経験回数</option><option value="last"${st.sort==='last'?' selected':''}>直近の日付</option><option value="g"${st.sort==='g'?' selected':''}>評価順</option></select></div></div><div id="sum" class="mut" style="margin-bottom:8px"></div><div id="res"></div>`;updFind()}
+function updFind(){const key=st.rsite||st.rq.trim();document.querySelectorAll('#sc .fc').forEach(b=>b.classList.toggle('on',b.dataset.site===st.rsite));
+if(!key){$('#sum').textContent='';$('#res').innerHTML='<p class="mut">業務名を入力するか、上のボタンから選ぶと、過去にその業務に就いたスタッフが一覧表示されます。</p>';return}
+const k=nz(key),ok=s=>st.rsite?s===st.rsite:nz(s).includes(k),out=[];let tot=0;
+R.forEach(r=>{if(st.rg.size&&!st.rg.has(gk(r.grade)))return;
+const ds=(hist.get(r.id)||[]).filter(h=>h.code==='確定'&&ok(M[h.mi].cols[h.ci].site)).map(h=>({d:dt(h.mi,h.ci),mi:h.mi,ci:h.ci})).sort((a,b)=>a.d-b.d),
+sk=Object.entries(r.skills||{}).some(([n,v])=>v.startsWith('〇')&&ok(n));
+if(!ds.length&&!sk)return;const past=ds.filter(x=>x.d<=today);tot+=past.length;out.push({r,ds,sk,n:past.length,last:past.length?+past[past.length-1].d:0})});
+out.sort((a,b)=>st.sort==='g'?RK[gk(a.r.grade)]-RK[gk(b.r.grade)]||b.n-a.n:st.sort==='last'?b.last-a.last:b.n-a.n||b.last-a.last);
+$('#sum').innerHTML=`「${esc(key)}」：<b>${out.length}名</b>（過去の確定 のべ${tot}回）　<small>点線＝今後の予定／「経験〇」＝名簿の経験フラグ</small>`;
+$('#res').innerHTML=out.slice(0,200).map(({r,ds,sk,n})=>`<div class="row"><div class="who" data-id="${r.id}"><span><b>${esc(r.name)}</b> ${gp(r)}</span><small>#${r.id} · ${esc(r.station||'—')}</small></div><div class="big">${n}<small>回</small></div><div class="dts">${sk&&!ds.length?'':''}${sk?'<span class="pill">経験〇</span>':''}${ds.slice(-14).reverse().map(x=>`<button class="dc${x.d>today?' fu':''}" data-m="${x.mi}" data-c="${x.ci}" title="${esc(M[x.mi].cols[x.ci].raw)}">${x.d.getMonth()+1}/${x.d.getDate()}</button>`).join('')}${ds.length>14?`<small>他${ds.length-14}件</small>`:''}</div></div>`).join('')||'<p class="mut">該当者がいません</p>'}
+
+/* ---------- モーダル ---------- */
+const open=h=>{st.sm=false;$('.mb').classList.remove('wide');$('#mc').innerHTML=navbar()+h+(h.includes('class="mfoot"')?'':mfoot('<button class="btn p big" data-nav="done">✔ 確定する（閉じる）</button>','← 戻る'));$('#ov').hidden=false;$('.mb').scrollTop=0};
+function showStaff(id){track(showStaff,[id],'スタッフ詳細',0);const r=byId.get(id),hs=(hist.get(id)||[]).map(h=>({...h,d:dt(h.mi,h.ci),c:M[h.mi].cols[h.ci]})).sort((a,b)=>b.d-a.d),done=hs.filter(h=>h.code==='確定'),bs={};done.forEach(h=>bs[h.c.site]=(bs[h.c.site]||0)+1);
+const a=age(r),sk=Object.entries(r.skills||{});
+open(`<h3>${esc(r.name)} ${gp(r)}</h3><div class="mut">${esc(r.kana)}</div><div class="acts" style="justify-content:flex-start;margin:8px 0 0"><button class="btn s" data-ed="${r.id}">✏️ 情報を編集</button></div><dl><dt>ID</dt><dd>#${r.id}</dd><dt>性別/年齢</dt><dd>${esc(r.sex||'—')} / ${a!==''?a+'歳':'—'}</dd><dt>生年月日</dt><dd>${esc(r.birth||'—')}</dd><dt>居住</dt><dd>${esc(r.pref||'—')}</dd><dt>最寄り駅</dt><dd>${esc(r.station||'—')}</dd><dt>住所</dt><dd>${esc(((r.zip?'〒'+r.zip+' ':'')+(r.addr||''))||'—')}</dd><dt>区分</dt><dd>${esc(r.type||'—')}${r.retired?' <span class="pill st-bad">退職</span>':''}${r.joined?' ／ 入社 '+esc(r.joined):''}</dd><dt>電話</dt><dd>${r.tel?`<a href="tel:${esc(r.tel)}">${esc(r.tel)}</a>`:'—'}</dd><dt>メール</dt><dd>${r.mail?`<a href="mailto:${esc(r.mail)}">${esc(r.mail)}</a>`:'—'}</dd>${r.ng?`<dt>NGな人</dt><dd>${esc(r.ng)}</dd>`:''}</dl>
+${sk.length?`<h4>名簿の経験フラグ</h4><div class="tags">${sk.map(([k,v])=>`<i class="pill ${v.startsWith('NG')?'st-bad':''}">${esc(k)}：${esc(v)}</i>`).join('')}</div>`:''}
+<h4>経験業務（確定 ${done.length}回）</h4><div class="tags">${Object.entries(bs).sort((x,y)=>y[1]-x[1]).map(([s,n])=>`<i class="pill st-ok">${esc(s||'—')} ×${n}</i>`).join('')||'<span class="mut">履歴なし</span>'}</div>
+${staffPayHtml(r)}<h4>確定履歴</h4><ul class="h">${done.map(h=>`<li><span style="min-width:70px">${fd(h.mi,h.ci)}</span><span>${esc(h.c.raw||'—')}</span>${h.d>today?'<span class="pill st-can">予定</span>':''}</li>`).join('')||'<li class="mut">なし</li>'}</ul>`)}
+const SOP=['','確定','〇','打診','△','×','当日欠','お断り'];
+const psRes=(mi,ci)=>{const q=nz(st.ps);if(!q)return'<small class="mut">名前・カナ・IDで検索すると、ここから直接割り当てできます</small>';const cur=new Map(cell.get(mi+'_'+ci)||[]);
+return R.filter(r=>r._k.includes(q)).slice(0,8).map(r=>`<div class="ar"><span><b>${esc(r.name)}</b> ${gp(r)} <small>#${r.id}${cur.get(r.id)?' ・現在：'+cur.get(r.id):''}</small></span><span class="sb">${['確定','〇','打診','×'].map(s=>`<button class="btn s st-${STC[s]}" data-set="${s}" data-id="${r.id}" data-m="${mi}" data-c="${ci}">${s}</button>`).join('')}</span></div>`).join('')||'<small class="mut">該当なし</small>'};
+function showCell(mi,ci){track(showCell,[mi,ci],'現場の割り当て',0);const c=M[mi].cols[ci],g={};(cell.get(mi+'_'+ci)||[]).forEach(([id,v])=>{if(byId.has(id))(g[v]=g[v]||[]).push(id)});const sc=($('.mb')||{}).scrollTop||0;
+const row=(id,v)=>{const r=byId.get(id);return `<div class="ar"><button class="nm" data-id="${id}">${esc(r.name)} <small>${esc(r.grade||'')}</small></button><select data-as="${id}" data-am="${mi}" data-ac="${ci}" class="st-${STC[v]||'ng'}">${SOP.map(o=>`<option value="${o}"${o===v?' selected':''}>${o||'（クリア）'}</option>`).join('')}</select></div>`};
+const sec=['確定','〇','打診','△','当日欠','お断り'].filter(k=>g[k]).map(k=>`<h4><span class="pill st-${STC[k]}">${k}</span> ${g[k].length}名</h4>${g[k].map(id=>row(id,k)).join('')}`).join('');
+open(`<h3>${fd(mi,ci)} ${esc(c.raw||c.site)}</h3><p class="mut">必要 ${c.need}名 / 決定 ${c.dec}名 / 残 ${c.need-c.dec}名${c.ev?' · '+esc(c.ev):''}</p>${c.client||c.detail?`<p style="margin:0 0 6px">🏢 <b>${esc(c.client||'（クライアント未設定）')}</b>${c.detail?' ／ '+esc(c.detail):''}</p>`:''}<div class="chips" style="margin:0 0 8px"><label class="chk"><input type="checkbox" data-sc="inv|${mi}|${ci}"${c.invDone?' checked':''}> 🧾 <b>請求書完了</b></label><label class="chk"><input type="checkbox" data-sc="pay|${mi}|${ci}"${c.payDone?' checked':''}> 💴 <b>支払完了</b></label></div><div class="acts" style="justify-content:flex-start;margin:0 0 6px"><button class="btn s" data-sch="${mi}">✏ スケジュール・クライアントを編集</button></div><h4>➕ スタッフを追加・ステータス変更</h4><input id="ps" type="search" data-pm="${mi}" data-pc="${ci}" placeholder="名前・カナ・IDで検索" value="${esc(st.ps)}" autocomplete="off"><div id="pres" style="margin-top:6px">${psRes(mi,ci)}</div><h4 style="margin-top:18px">現在の登録状況</h4>${sec||'<p class="mut">まだ登録がありません</p>'}${g['×']?`<details style="margin-top:12px"><summary class="mut">× 不可 ${g['×'].length}名</summary>${g['×'].map(id=>row(id,'×')).join('')}</details>`:''}`);$('.mb').scrollTop=sc}
+function staffForm(id){track(staffForm,[id],'スタッフ登録・編集',0);const e=id!=null?byId.get(id):null,nid=e?e.id:Math.max(0,...R.map(r=>r.id))+1,v=k=>esc(e?(e[k]??''):'');
+const gs=['','AA','A+','A','B','C'];
+open(`<h3>${e?'スタッフ情報を編集':'新規スタッフ登録'}</h3><div class="fg"><label class="fl">スタッフID／番号 *<input id="f_id" type="number" min="1" value="${nid}"${e?' readonly':''}></label><label class="fl">氏名（漢字）*<input id="f_name" type="text" value="${v('name')}" placeholder="例：山田 太郎"></label><label class="fl">氏名（カナ）<input id="f_kana" type="text" value="${v('kana')}" placeholder="例：ヤマダ タロウ"></label><label class="fl">年齢<input id="f_age" type="number" min="0" max="120" value="${e?age(e):''}"></label><label class="fl">性別<select id="f_sex"><option value="">—</option>${['男','女'].map(s=>`<option${e&&e.sex===s?' selected':''}>${s}</option>`).join('')}</select></label><label class="fl">評価<select id="f_grade">${gs.map(s=>`<option value="${s}"${e&&(e.grade||'').normalize('NFKC')===s?' selected':''}>${s||'—（未評価）'}</option>`).join('')}</select></label><label class="fl">最寄り駅<input id="f_station" type="text" value="${v('station')}"></label><label class="fl">生年月日<input id="f_birth" type="date" value="${v('birth')}"></label><label class="fl">電話番号<input id="f_tel" type="tel" value="${v('tel')}"></label><label class="fl">メールアドレス<input id="f_mail" type="email" value="${v('mail')}"></label><label class="fl">郵便番号<input id="f_zip" type="text" value="${v('zip')}" placeholder="例：151-0053"></label><label class="fl">スタッフ区分<select id="f_type">${['日払スタッフ','月払スタッフ','週払スタッフ','正社員','管理職社員'].map(s=>`<option${(e&&e.type?e.type:'日払スタッフ')===s?' selected':''}>${s}</option>`).join('')}</select></label><label class="fl" style="grid-column:1/-1">住所（都道府県から）<input id="f_addr" type="text" value="${v('addr')}" placeholder="例：東京都渋谷区代々木1-53-4"></label></div><p id="ferr" class="err"></p>${e&&e._new?`<div class="acts" style="justify-content:flex-start;margin:6px 0 0"><button class="btn d" id="fdel" data-did="${e.id}">この登録を削除</button></div>`:''}${mfoot(`<button class="btn p big" id="fsave" data-edit="${e?e.id:''}">✔ 確定する（保存）</button>`)}`)}
+function saveStaff(editId){const g=k=>$('#f_'+k).value.trim(),err=m=>{$('#ferr').textContent=m},id=+g('id');
+if(!Number.isInteger(id)||id<=0)return err('IDは1以上の整数で入力してください');if(!g('name'))return err('氏名（漢字）は必須です');
+if(editId===''&&byId.has(id))return err(`ID ${id} は既に使われています（${byId.get(id).name}）`);
+const rec={id,name:g('name'),kana:g('kana'),age:g('age')===''?'':+g('age'),sex:g('sex'),station:g('station'),birth:g('birth'),tel:g('tel'),mail:g('mail'),grade:g('grade'),zip:g('zip'),addr:g('addr'),type:g('type')};
+if(editId!==''){const o=byId.get(id);['zip','addr','type'].forEach(k=>{if((o[k]||'')===rec[k])delete rec[k]})}
+let r=byId.get(id);if(r)Object.assign(r,rec);else{r={pref:'',ng:'',skills:{},synced:false,retired:false,...rec,_new:1};R.push(r);R.sort((a,b)=>a.id-b.id);byId.set(id,r)}
+OV.staff[id]={...(OV.staff[id]||{}),...rec};if(CN[id]){applyRec(CN[id],rec,false);saveCn()}
+r._k=keyOf(r);save();closeModal();
+if(editId===''){st.q=rec.name;st.grades.clear();st.sex='';st.act=false;go('roster');toast(`✅ ${rec.name} さんを登録しました`)}else{refresh();toast('✅ 更新しました')}}
+function delStaff(b){if(!b.dataset.sure){b.dataset.sure=1;b.textContent='本当に削除する';return}const id=+b.dataset.did;(hist.get(id)||[]).slice().forEach(h=>setCode(id,h.mi,h.ci,''));hist.delete(id);Object.keys(OV.cells).forEach(k=>{if(k.startsWith(id+'|'))delete OV.cells[k]});
+delete OV.staff[id];delete CN[id];saveCn();byId.delete(id);R.splice(R.findIndex(r=>r.id===id),1);st.pin.delete(id);rebuild();save();closeModal();go(st.tab);toast('削除しました')}
+const dayOpts=(key,sel)=>Array.from({length:daysIn(key)},(_,i)=>`<option value="${i+1}"${i+1===sel?' selected':''}>${i+1}日（${wdOf(key,i+1)}）</option>`).join('');
+function schedForm(day){track(schedForm,[day],'現場スケジュール編集',1);const m=M[st.mon],rows=m.cols.map((c,i)=>[c,i]).filter(([c])=>!c.del).sort((a,b)=>a[0].day-b[0].day||a[1]-b[1]),sites=[...new Set(M.flatMap(x=>x.cols.filter(c=>!c.del).map(c=>c.site)).filter(Boolean))],details=uniq(M.flatMap(x=>x.cols.filter(c=>!c.del).map(c=>c.detail)).concat(CX.links.map(l=>l.detail)));
+open(`<h3>📅 現場スケジュール編集</h3><div class="fg"><label class="fl">対象の月<select id="smon">${MO().map(i=>`<option value="${i}"${i===st.mon?' selected':''}>${M[i].label}</option>`).join('')}</select></label><label class="fl">新しい月を追加<span class="inl"><input id="nm" type="month"><button class="btn" id="addm">追加</button></span></label></div>
+<div class="box"><b>＋ ${m.label}に現場を追加</b><div class="fg3"><label class="fl">日付<select id="a_day">${dayOpts(m.key,day||1)}</select></label><label class="fl">現場（イベント）名<input id="a_site" type="text" list="sites" placeholder="例：JEF、タワレコ、家政大学" autocomplete="off"></label><label class="fl">必要人員<input id="a_need" type="number" min="0" value="1"></label><span></span></div>
+<div class="fg3"><label class="fl">開始時間<input id="a_ts" type="time"></label><label class="fl">終了時間<input id="a_te" type="time"></label><span></span><span></span></div>
+<div class="fg4"><label class="fl">クライアント（会社）${comboHtml('a_client',clientNames(),'')}</label><label class="fl">詳細（チーム名・案件名）<input id="a_detail" type="text" list="details" placeholder="例：JEF、ベレーザ" autocomplete="off"></label><button class="btn p" id="addc">＋ 追加</button></div><small class="mut">クライアントは任意です。入力すると、クライアント一覧・Excel出力にも自動で反映されます。</small></div>
+<datalist id="sites">${sites.map(s=>`<option value="${esc(s)}">`).join('')}</datalist><datalist id="details">${details.map(s=>`<option value="${esc(s)}">`).join('')}</datalist>
+<div class="chips" style="margin-top:8px"><button class="btn s" data-sx="month">📥 ${m.label}をExcel出力</button><button class="btn s" data-sx="all">📥 全期間をExcel出力</button></div>
+<h4>登録済みの現場（${rows.length}件）<small>　変更は自動で保存されます</small></h4>${rows.map(([c,i])=>`<div class="erw"><div class="er"><select data-ec="${i}" data-f="day">${dayOpts(m.key,c.day)}</select><input type="text" data-ec="${i}" data-f="site" value="${esc(c.raw)}" list="sites"><input type="number" min="0" data-ec="${i}" data-f="need" value="${c.need}"><small>決定${c.dec}</small><button class="btn d s" data-dc="${i}">削除</button></div><div class="er6"><label class="chk">🕘 <input type="time" data-ec="${i}" data-f="ts" value="${esc(c.tStart||'')}" style="width:auto"> ～ <input type="time" data-ec="${i}" data-f="te" value="${esc(c.tEnd||'')}" style="width:auto"></label><label class="chk"><input type="checkbox" data-ec="${i}" data-f="inv"${c.invDone?' checked':''}> 🧾 <b>請求書完了</b></label><label class="chk"><input type="checkbox" data-ec="${i}" data-f="pay"${c.payDone?' checked':''}> 💴 <b>支払完了</b></label></div><div class="er3"><div>${comboHtml('ec_'+i,clientNames(),c.client||'',`data-ec="${i}" data-f="client"`)}</div><input type="text" data-ec="${i}" data-f="detail" value="${esc(c.detail||'')}" list="details" placeholder="詳細（チーム名・案件名）"></div></div>`).join('')||'<p class="mut">まだありません</p>'}`);st.sm=true}
+function addCol(){const m=M[st.mon],day=+$('#a_day').value,raw=$('#a_site').value.trim(),need=Math.max(0,+$('#a_need').value||0),client=comboVal('a_client'),detail=$('#a_detail').value.trim(),tStart=$('#a_ts').value||'',tEnd=$('#a_te').value||'';if(!raw)return toast('現場名を入力してください');
+ const col={day,site:normSite(raw),raw,need,dec:0,wd:wdOf(m.key,day),ev:'',client,detail,tStart,tEnd};m.cols.push(col);persistCol(st.mon,m.cols.length-1);linkFromCol(col);const pn=propagateClient(st.mon,m.cols.length-1);rebuild();schedForm(day);toast(`${day}日 ${raw}${client?'（'+client+(detail?'・'+detail:'')+'）':''}（${need}名）を追加しました${pn?`（同じ現場の未設定の${pn}日にも会社を反映）`:''}`)}
+function linkFromCol(c){if(!c.client)return;ensureClient(c.client);const has=CX.links.some(l=>nk(l.event)===nk(c.site)&&nk(l.client)===nk(c.client)&&(!c.detail||nk(l.detail||'')===nk(c.detail)));if(!has)CX.links.push({id:rid('l'),event:c.site,client:c.client,detail:c.detail||'',memo:''});saveCx()}
+function addMonth(){const k=$('#nm').value;if(!/^\d{4}-\d{2}$/.test(k))return toast('追加する年月を選んでください');let i=M.findIndex(m=>m.key===k);if(i<0){const[y,mo]=k.split('-');M.push({key:k,label:`${y}年${+mo}月`,cols:[]});BASE.push(0);OV.months.push(k);save();i=M.length-1;toast(`${y}年${+mo}月を追加しました`)}st.mon=i;st.site='';schedForm()}
+function delCol(i){const mi=st.mon,c=M[mi].cols[i];(cell.get(mi+'_'+i)||[]).map(a=>a[0]).forEach(id=>{setCode(id,mi,i,'');delete OV.cells[`${id}|${M[mi].key}|${i}`]});c.del=true;persistCol(mi,i);rebuild();schedForm();toast('削除しました')}
+function editCol(t){const mi=st.mon,i=+t.dataset.ec,c=M[mi].cols[i],f=t.dataset.f;let pn=0;
+if(f==='day'){c.day=+t.value;c.wd=wdOf(M[mi].key,c.day)}else if(f==='site'){const v=t.value.trim();if(!v){t.value=c.raw;return toast('現場名は空にできません')}c.raw=v;c.site=normSite(v)}
+else if(f==='ts'){c.tStart=t.value}else if(f==='te'){c.tEnd=t.value}else if(f==='inv'){c.invDone=t.checked}else if(f==='pay'){c.payDone=t.checked}else if(f==='client'||f==='detail'){c[f]=t.value.trim();linkFromCol(c);pn=propagateClient(mi,i)}else c.need=Math.max(0,+t.value||0);
+persistCol(mi,i);rebuild();if(st.tab==='shift')updShift();if(pn){toast(`💾 保存しました（同じ現場の未設定の${pn}日にも反映）`);return schedForm()}toast('💾 保存しました')}
+function doSet(x){const id=+x.dataset.id,mi=+x.dataset.m,ci=+x.dataset.c;assign(id,mi,ci,x.dataset.set);showCell(mi,ci);refresh();toast(`${byId.get(id).name}：${x.dataset.set}`)}
+function cycle(x){const id=+x.dataset.sid,mi=+x.dataset.m,ci=+x.dataset.c,h=(hist.get(id)||[]).find(h=>h.mi===mi&&h.ci===ci),CY=['','打診','〇','確定','×'],i=CY.indexOf(h?h.code:'');st.pin.add(id);assign(id,mi,ci,i<0?'打診':CY[(i+1)%CY.length]);updShift()}
+
+/* ---------- CSV インポート／エクスポート ---------- */
+const nk=s=>String(s||'').normalize('NFKC').replace(/\s/g,'').toLowerCase();
+function parseCSV(s){const rows=[];let row=[],f='',q=false;for(let i=0;i<s.length;i++){const c=s[i];if(q){if(c==='"'){if(s[i+1]==='"'){f+='"';i++}else q=false}else f+=c}else if(c==='"'&&f==='')q=true;else if(c===','){row.push(f);f=''}else if(c==='\n'||c==='\r'){if(c==='\r'&&s[i+1]==='\n')i++;row.push(f);rows.push(row);row=[];f=''}else f+=c}if(f!==''||row.length){row.push(f);rows.push(row)}return rows}
+const decodeBuf=b=>{try{return new TextDecoder('utf-8',{fatal:true}).decode(b).replace(/^\uFEFF/,'')}catch(e){return new TextDecoder('shift_jis').decode(b)}};
+const SALIAS={id:'id',スタッフid:'id',スタッフ番号:'id',番号:'id',氏名:'name','氏名(漢字)':'name',名前:'name',カナ:'kana','氏名(カナ)':'kana',フリガナ:'kana',性別:'sex',年齢:'age',評価:'grade',最寄り駅:'station',最寄駅:'station',生年月日:'birth',電話番号:'tel',電話:'tel',携帯電話:'tel',メール:'mail',メールアドレス:'mail',NGな人:'ng',住所:'addr',郵便番号:'zip',スタッフ区分:'type',県名:'pref'};
+let imp=null,lastEx=null;
+function mapCsv(rows){const hk=CN_HEAD.slice(0,CN_N).map(nk),head=rows[0].map(nk),body=rows.slice(1).filter(r=>r.some(x=>String(x).trim()!==''));
+ const ix=hk.map(h=>head.indexOf(h)),hit=ix.filter(i=>i>=0).length;
+ if(hit>=60)return{kind:'キャスナビ登録全データ形式',partial:false,recs:body.map(r=>ix.map(i=>i<0?'':String(r[i]??'')))};
+ const al={};Object.entries(SALIAS).forEach(([k,v])=>al[nk(k)]=v);const tgt=head.map(h=>al[h]||'');
+ if(!tgt.includes('id')||!tgt.includes('name'))return null;
+ return{kind:'簡易CSV（ID・氏名ほか）',partial:true,recs:body.map(r=>{const o={};tgt.forEach((k,j)=>{if(!k)return;let v=String(r[j]??'').trim();if(k==='birth')v=isoFromCn(v);if(k==='age')v=v===''?'':+v;o[k]=v});return o})}}
+const recId=(m,r)=>m.partial?+r.id:+r[0],recName=(m,r)=>m.partial?r.name:r[CI['氏名(漢字)']];
+function csvForm(){track(csvForm,[],'CSV',1);const ex=r=>CN[r.id]||!r.synced,act=R.filter(r=>!r.retired&&ex(r)).length,uns=R.filter(r=>!r.synced).length,cur=rosterList().filter(ex).length,all=R.filter(ex).length,skip=R.length-all;lastEx=null;
+open(`<h3>⇅ CSVインポート／エクスポート</h3>
+<h4>⬆ インポート</h4><p class="mut" style="margin:0 0 6px">キャスナビの「登録全データ出力」CSV（Shift-JIS）か、簡易CSV（ID・氏名・カナ・性別・生年月日・最寄り駅・電話番号・メール・評価）を取り込みます。<b>スタッフ番号（ID）が同じ人は同一人物</b>として扱います。ファイルはこのブラウザ内でのみ処理されます。</p><input type="file" id="csvf" accept=".csv,text/csv"><div id="csvp"></div>
+<h4 style="margin-top:22px">⬇ エクスポート（キャスナビ取込用CSV）</h4><p class="mut" style="margin:0 0 6px">キャスナビの出力CSVと同じ見出し・列順・Shift-JISで出力します。</p>
+<div class="box"><label><input type="radio" name="exs" value="all" checked> 全員（${all}名）</label><label><input type="radio" name="exs" value="active"> 在職のみ（${act}名）</label><label><input type="radio" name="exs" value="unsynced"> キャスナビ未登録のみ＝このアプリで新規登録した人など（${uns}名）</label><label><input type="radio" name="exs" value="ids"> いまの名簿の絞り込み結果（${cur}名）</label></div>
+${skip?`<small class="warn">キャスナビ登録済みでCSV未取込の${skip}名は、キャスナビの全データCSVを取り込むと出力できます（口座などの情報を空のまま出力しないための安全装置です）。</small>`:''}<div class="acts" style="margin-top:8px"><button class="btn p" id="csvex">CSVを出力</button></div><div id="exr"></div>
+<h4 style="margin-top:22px">💾 バックアップ／復元</h4><p class="mut" style="margin:0 0 6px">登録・編集・シフト・締め・取り込んだCSVデータを1つのファイルに保存し、別のブラウザや別のサイトで復元できます（名簿の電話番号・メール等も含まれるため、取り扱いにご注意ください）。</p><div class="acts" style="justify-content:flex-start;margin:0"><button class="btn" id="bkout">バックアップを書き出す</button></div><p class="mut" style="margin:12px 0 4px">復元：バックアップファイルを選んでください</p><input type="file" id="bkf" accept=".json,application/json"><div id="bkp"></div>`)}
+async function loadCsv(file){const p=$('#csvp');if(!file)return;p.innerHTML='<p class="mut">読み込み中…</p>';
+ try{const rows=parseCSV(decodeBuf(await file.arrayBuffer()));if(rows.length<2)throw new Error('データ行がありません');const m=mapCsv(rows);if(!m)throw new Error('形式を判別できません。キャスナビの出力CSV、または「ID」「氏名」の見出しがあるCSVを選んでください。');
+  const seen=new Set();let nNew=0,nOld=0,bad=0,dup=0;m.recs.forEach(r=>{const id=recId(m,r);if(!id||(!recName(m,r)&&!byId.has(id))){bad++;return}if(seen.has(id)){dup++;return}seen.add(id);byId.has(id)?nOld++:nNew++});imp=Object.assign(m,{nNew,nOld,bad,dup});
+  const F=r=>m.partial?[r.id,r.name,r.kana,r.sex,r.birth,r.station]:[r[0],r[CI['氏名(漢字)']],r[CI['氏名(ｶﾅ)']],r[CI['性別']],r[CI['生年月日']],r[CI['最寄駅']]];
+  p.innerHTML=`<div class="box"><b>${esc(m.kind)}</b>　${m.recs.length}行<br><span class="ok">新規 ${nNew}名</span> ／ <span class="warn">既存（ID一致）${nOld}名</span>${bad?` ／ <span class="bad">不備 ${bad}行（ID・氏名なし）</span>`:''}${dup?` ／ <span class="warn">ファイル内ID重複 ${dup}行</span>`:''}</div>
+  <table class="pv"><tr><th>ID</th><th>氏名</th><th>ｶﾅ</th><th>性別</th><th>生年月日</th><th>最寄駅</th></tr>${m.recs.slice(0,4).map(r=>`<tr>${F(r).map(x=>`<td>${esc(x)}</td>`).join('')}</tr>`).join('')}</table>
+  <div class="box"><label><input type="radio" name="cmode" value="update" checked> 新規を追加し、既存（ID一致）も上書きする</label><label><input type="radio" name="cmode" value="add"> 新規だけ追加する（既存は変更しない）</label>${m.partial?'<small class="mut">※簡易CSVは、入力のある項目だけを反映します。</small>':'<small class="mut">※上書き時は、キャスナビ列を全項目CSVの内容に置き換えます（アプリの評価・NG・経験メモは保持）。</small>'}</div>
+  <div class="acts"><button class="btn p" id="csvgo">取り込む</button></div><div id="csvr"></div>`}
+ catch(e){imp=null;p.innerHTML=`<p class="bad">${esc(e.message||e)}</p>`}}
+function runImport(){if(!imp)return;const mode=document.querySelector('[name=cmode]:checked').value,m=imp;let a=0,u=0,s=0;
+ m.recs.forEach(rec=>{const id=recId(m,rec);if(!id){s++;return}const ex=byId.get(id);if(ex&&mode!=='update'){s++;return}if(!ex&&!recName(m,rec)){s++;return}
+  let r;
+  if(m.partial){const c={};Object.entries(rec).forEach(([k,v])=>{if(v!==''&&v!==undefined)c[k]=v});
+   if(ex){Object.assign(ex,c);if(CN[id])applyRec(CN[id],c,false);r=ex;u++}else{r={pref:'',ng:'',skills:{},synced:false,retired:false,_new:1,...c};R.push(r);byId.set(id,r);a++}}
+  else{CN[id]=rec.slice();const rr=recFromCn(CN[id],ex);if(ex){Object.assign(ex,rr);r=ex;u++}else{r={pref:'',ng:'',skills:{},_new:1,...rr};R.push(r);byId.set(id,r);a++}}
+  r._k=keyOf(r);OV.staff[id]={...(OV.staff[id]||{}),...pick(r)}});
+ R.sort((x,y)=>x.id-y.id);save();saveCn();rebuild();imp=null;refresh();
+ $('#csvr').innerHTML=`<div class="box"><b class="ok">✔ 取り込み完了</b>　追加 ${a}名 ／ 更新 ${u}名 ／ スキップ ${s}行</div>`;toast(`✔ 追加${a}・更新${u}`)}
+async function runExport(){const sc=document.querySelector('[name=exs]:checked').value,out=$('#exr');let L=R.slice();
+ if(sc==='active')L=L.filter(r=>!r.retired);else if(sc==='unsynced')L=L.filter(r=>!r.synced);else if(sc==='ids')L=rosterList();
+ const n0=L.length;L=L.filter(r=>CN[r.id]||!r.synced);const sk=n0-L.length;L.sort((x,y)=>x.id-y.id);if(!L.length){out.innerHTML='<p class="warn">出力できるスタッフがいません'+(sk?'（キャスナビの全データCSVを先に取り込んでください）':'')+'</p>';return}
+ const q=v=>/[",\r\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v,lines=[CN_HEAD.map(q).join(',')];
+ L.forEach(r=>lines.push(buildRow(r).concat(['']).map(x=>q(String(x??''))).join(',')));
+ const{bytes,miss}=sjEncode(lines.join('\r\n')+'\r\n'),d=new Date(),p2=n=>String(n).padStart(2,'0'),name=`キャスナビ登録データ_${d.getFullYear()}${p2(d.getMonth()+1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}.csv`,blob=new Blob([bytes],{type:'text/csv'});
+ const sv=await saveBlob(blob,name);if(sv.declined){out.innerHTML='<p class="mut">保存をキャンセルしました</p>';return}
+ let note=sv.renamed?`<br><small class="warn">この環境では .csv のまま保存できないため「${esc(sv.name)}」で保存しました。拡張子を .csv に変更してからキャスナビに取り込んでください。</small>`:'';
+ lastEx=sc==='unsynced'?L.map(r=>r.id):null;
+ out.innerHTML=`<div class="box"><b class="ok">✔ ${L.length}名分のCSVを作成しました</b><br><small class="mut">${esc(name)}</small>${sk?`<br><small class="warn">キャスナビ全データが未取込の${sk}名は出力から除外しました</small>`:''}${miss.length?`<br><small class="warn">Shift-JISに変換できない文字を「?」に置き換えました：${esc(miss.join(' '))}</small>`:''}${note}${lastEx&&lastEx.length?`<p class="mut" style="margin:8px 0 4px">キャスナビに取り込めたら、下のボタンで「登録済み」にしておくと、次回の「未登録のみ」出力に含まれません。</p><button class="btn" id="mksync">キャスナビに取り込み済みにする</button>`:''}</div>`}
+function doMarkSync(){if(!lastEx)return;lastEx.forEach(id=>{const r=byId.get(id);if(r){r.synced=true;OV.staff[id]={...(OV.staff[id]||{}),synced:true}}});save();toast(`✔ ${lastEx.length}名を取り込み済みにしました`);$('#mksync').remove();lastEx=null;refresh()}
+
+/* ---------- 締め ---------- */
+const CLKEY='staffapp.close';let CL=STATE.CL||[],PI=null;
+const num=v=>Number(v)||0,D0=()=>({amount:'',paid:false,paidAt:'',sent:false,sentAt:''});
+const newEntry=(sid,days)=>({sid,days:days.slice(),pay:{},extra:'',extraPaid:false,extraPaidAt:'',slip:''});
+CL.forEach(c=>{c.days=c.days||[];c.staff=c.staff||[];c.staff.forEach(s=>{s.days=s.days||[];if(!s.pay){s.pay={};s.days.forEach(d=>{s.pay[d]={amount:'',paid:!!s.paid,paidAt:s.paidAt||'',sent:!!s.slipSent,sentAt:s.slipSentAt||''}});const a=num(s.amount);s.extra=a>0?a:'';s.extraPaid=!!s.paid&&a>0;s.extraPaidAt=s.paidAt||'';delete s.amount;delete s.paid;delete s.paidAt;delete s.slipSent;delete s.slipSentAt}if(s.extra===undefined){s.extra='';s.extraPaid=false;s.extraPaidAt=''}})});
+const saveCl=()=>{PI=null;STORE.sync('cl')};
+const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`,todayIso=iso(today);
+const fdi=s=>{const d=new Date(s+'T00:00:00');return s&&!isNaN(d)?`${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`:'—'},fdm=s=>fdi(s).replace(/\(.\)/,'');
+const clById=id=>CL.find(c=>c.id===id),yen=n=>'¥'+Number(n||0).toLocaleString('ja-JP'),uniq=a=>[...new Set(a.filter(Boolean))];
+/* 日別の支払データ：s.pay[日付]={amount,paid,paidAt,sent,sentAt} ／ s.extra=日付に紐づかない金額(交通費・調整など) */
+const getRec=(s,d)=>(s.pay=s.pay||{},s.pay[d]||(s.pay[d]=D0())),rc=(s,d)=>(s.pay&&s.pay[d])||D0();
+const dayAmt=(s,d)=>num(rc(s,d).amount),entryDaySum=s=>s.days.reduce((t,d)=>t+dayAmt(s,d),0),entryTotal=s=>entryDaySum(s)+num(s.extra);
+const entryPaidAmt=s=>s.days.reduce((t,d)=>t+(rc(s,d).paid?dayAmt(s,d):0),0)+(s.extraPaid?num(s.extra):0);
+const paidDays=s=>s.days.filter(d=>rc(s,d).paid).length,sentDays=s=>s.days.filter(d=>rc(s,d).sent).length;
+const entryPaid=s=>{const n=s.days.length,ex=num(s.extra)>0;return(n||ex)&&paidDays(s)===n&&(!ex||s.extraPaid)?true:false},entrySent=s=>s.days.length>0&&sentDays(s)===s.days.length;
+const totAmt=c=>c.staff.reduce((t,s)=>t+entryTotal(s),0),paidAmtC=c=>c.staff.reduce((t,s)=>t+entryPaidAmt(s),0),payStat=c=>({n:c.staff.length,p:c.staff.filter(entryPaid).length});
+const lastDay=mk=>{const m=/^(\d{4})-(\d{2})$/.exec(mk||'');return m?`${mk}-${String(new Date(+m[1],+m[2],0).getDate()).padStart(2,'0')}`:''};
+const payInfo=id=>{if(!PI){PI=new Map();CL.forEach(c=>c.staff.forEach(s=>{const o=PI.get(s.sid)||{n:0,unpaid:0,unpaidAmt:0,unsent:0};o.n++;if(!entryPaid(s)){o.unpaid++;o.unpaidAmt+=entryTotal(s)-entryPaidAmt(s)}if(!entrySent(s))o.unsent++;PI.set(s.sid,o)}))}return PI.get(id)||{n:0,unpaid:0,unpaidAmt:0,unsent:0}};
+const payBadge=id=>{return '';const p=payInfo(id);return(p.unpaid?`<i class="pill st-bad">未払 ${p.unpaid}件${p.unpaidAmt?' '+yen(p.unpaidAmt):''}</i>`:p.n?'<i class="pill st-ok">支払済</i>':'')+(p.unsent?'<i class="pill st-ask">明細未送付</i>':'')};
+async function saveBlob(blob,name){let n=name;for(let i=0;i<2;i++){try{const dl=await claude.use('downloads');if(!dl)throw new Error('na');await dl.save({filename:n,data:blob});toast('✔ 保存しました');return{ok:true,name:n,renamed:n!==name}}catch(e){if(e&&e.code==='declined')return{ok:false,declined:true};if(e&&(e.code==='extension_not_enabled'||e.code==='rejected_extension')&&i===0&&/\.csv$/.test(n)){n=n.replace(/\.csv$/,'.txt');continue}try{const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);toast('✔ ダウンロードしました');return{ok:true,name,renamed:false}}catch(e2){toast('⚠ ダウンロードできませんでした');return{ok:false}}}}return{ok:false}}
+/* プルダウン部品 */
+const schedSites=()=>uniq(M.flatMap(m=>m.cols.filter(c=>!c.del).map(c=>c.site))),closedEvents=()=>uniq(CL.map(c=>c.event).concat(CX.links.map(l=>l.event)));
+const opt=(x,v)=>`<option${x===v?' selected':''}>${esc(x)}</option>`;
+const comboHtml=(id,opts,val,ex='')=>`<select id="${id}" data-combo="1" ${ex}><option value="">（未選択）</option>${opts.map(o=>opt(o,val)).join('')}${val&&!opts.includes(val)?opt(val,val):''}<option value="__new__">＋ 新しく入力…</option></select><input type="text" id="${id}__n" placeholder="入力してください" hidden ${ex}>`;
+const eventSel=(id,val,ex='')=>{const a=schedSites(),b=closedEvents().filter(x=>!a.includes(x));return `<select id="${id}" data-combo="1" ${ex}><option value="">（選択してください）</option>${a.length?`<optgroup label="シフト表の現場">${a.map(o=>opt(o,val)).join('')}</optgroup>`:''}${b.length?`<optgroup label="既存の締めのイベント名">${b.map(o=>opt(o,val)).join('')}</optgroup>`:''}${val&&!a.includes(val)&&!b.includes(val)?opt(val,val):''}<option value="__new__">＋ 新しく入力…</option></select><input type="text" id="${id}__n" placeholder="イベント名を入力" hidden ${ex}>`};
+const comboVal=id=>{const s=$('#'+id);return s.value==='__new__'?$('#'+id+'__n').value.trim():s.value.trim()};
+const dateCands=ev=>{const out=[];if(!ev)return out;M.forEach((m,mi)=>m.cols.forEach((c,ci)=>{if(!c.del&&nk(c.site)===nk(ev))out.push(iso(dt(mi,ci)))}));CL.forEach(c=>{if(nk(c.event)===nk(ev)&&c.date)out.push(c.date)});return[...new Set(out)].sort()};
+const dateOpts=ev=>{const c=dateCands(ev);return `<option value="">カレンダーから選ぶ（${c.length}日）</option>`+c.map(d=>`<option value="${d}">${d.slice(0,4)}/${fdi(d)}</option>`).join('')};
+
+/* スタッフ個別：イベント・日別の支払金額／支払チェック／明細送付日 */
+const sdSum=s=>`総額 <b>${yen(entryTotal(s))}</b> ・ 支払 ${paidDays(s)}/${s.days.length}日${num(s.extra)?(s.extraPaid?'＋他済':'＋他未'):''} ・ 明細 ${sentDays(s)}/${s.days.length}日`;
+const nin=(ref,d,k,v,w)=>`<input type="number" min="0" step="100" data-ref="${ref}" data-d="${d}" data-k="${k}" value="${v===''||v==null?'':v}" style="width:${w||100}px">`;
+function sdBlock(c,s){const days=s.days.slice().sort();return `<details class="sdd" data-sk="${c.id}"${st.sopen.has(c.id)?' open':''}><summary><b>${esc(c.event)}</b> <small class="mut">${fdi(c.date)}</small> <span id="ss_${c.id}">${sdSum(s)}</span></summary>
+${days.map(d=>{const r=rc(s,d);return `<div class="sdr"><span class="sdd1">${fdi(d)}</span><label class="chk">金額 ¥${nin(c.id,d,'amount',r.amount)}</label><label class="chk"><input type="checkbox" data-ref="${c.id}" data-d="${d}" data-k="paid"${r.paid?' checked':''}> 支払済</label><label class="chk">明細送付日 <input type="date" data-ref="${c.id}" data-d="${d}" data-k="sentAt" value="${esc(r.sentAt||'')}" style="width:auto"></label></div>`}).join('')||'<p class="mut" style="margin:4px 0">出勤日がありません（締めの詳細で出勤日を設定してください）</p>'}
+<div class="sdr"><span class="sdd1">その他</span><label class="chk">金額 ¥${nin(c.id,'extra','amount',s.extra)}</label><label class="chk"><input type="checkbox" data-ref="${c.id}" data-d="extra" data-k="paid"${s.extraPaid?' checked':''}> 支払済</label><small class="mut">交通費・調整など日付に紐づかない分</small></div>
+<div class="sdr"><label class="chk">給料明細発行日 <input type="date" data-ref="${c.id}" data-d="slip" data-k="slip" value="${esc(s.slip||'')}" style="width:auto"></label><button class="btn s" data-cl="${c.id}">締めを開く</button></div></details>`}
+function staffPayHtml(r){return '';const rows=CL.map(c=>({c,s:c.staff.find(z=>z.sid===r.id)})).filter(x=>x.s).sort((a,b)=>(b.c.date||'').localeCompare(a.c.date||'')),avail=CL.filter(c=>!c.staff.some(z=>z.sid===r.id)).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+ return `<div id="sdet" data-psid="${r.id}"><h4>💴 支払・給料明細（イベント・日別）</h4><div id="sdtot" class="mut">${staffTot(r.id)}</div>${rows.map(({c,s})=>sdBlock(c,s)).join('')||'<p class="mut" style="margin:4px 0">この人が入っている締めはまだありません</p>'}${avail.length?`<div class="chips" style="margin-top:8px"><select id="sadd_sel" style="flex:1;width:auto"><option value="">イベントを選んで追加…</option>${avail.map(c=>`<option value="${c.id}">${fdi(c.date)} ${esc(c.event)}</option>`).join('')}</select><button class="btn s" id="sadd_btn">＋ 追加</button></div>`:''}</div>`}
+function staffTot(id){const e=CL.map(c=>c.staff.find(z=>z.sid===id)).filter(Boolean),t=e.reduce((a,s)=>a+entryTotal(s),0),p=e.reduce((a,s)=>a+entryPaidAmt(s),0);return e.length?`総額 <b>${yen(t)}</b> ／ 支払済 ${yen(p)} ／ <b class="${t-p>0?'warn':'ok'}">未払 ${yen(t-p)}</b>（${e.filter(s=>!entryPaid(s)).length}件）`:''}
+function sdetChange(t){const sid=+t.closest('#sdet').dataset.psid,cl=clById(t.dataset.ref),s=cl&&cl.staff.find(z=>z.sid===sid);if(!s)return;const d=t.dataset.d,k=t.dataset.k,v=t.type==='checkbox'?t.checked:t.value;
+ if(d==='slip')s.slip=v;else if(d==='extra'){if(k==='amount')s.extra=v===''?'':Math.max(0,+v||0);else{s.extraPaid=v;s.extraPaidAt=v?todayIso:''}}
+ else{const r=getRec(s,d);if(k==='amount')r.amount=v===''?'':Math.max(0,+v||0);else if(k==='paid'){r.paid=v;r.paidAt=v?todayIso:''}else if(k==='sentAt'){r.sentAt=v;r.sent=!!v}}
+ saveCl();$('#sdtot').innerHTML=staffTot(sid);const el=$('#ss_'+cl.id);if(el)el.innerHTML=sdSum(s);toast('💾 保存しました')}
+on('toggle',e=>{const d=e.target;if(d&&d.dataset&&d.dataset.sk)d.open?st.sopen.add(d.dataset.sk):st.sopen.delete(d.dataset.sk)},true);
+
+/* 一覧 / 月末集計 */
+const monthsOf=()=>[...new Set(CL.map(c=>(c.date||'').slice(0,7)).filter(Boolean))].sort().reverse(),mlab=m=>m?m.replace('-','年')+'月':'日付なし';
+function rClose(){const evs=closedEvents().sort((a,b)=>a.localeCompare(b,'ja')),mos=monthsOf(),sum=st.cv==='sum';
+ $('#main').innerHTML=`<div class="bar"><div class="chips"><div class="seg"><button data-cv="list" class="${sum?'':'on'}">締め一覧</button><button data-cv="sum" class="${sum?'on':''}">月末集計</button></div><span style="flex:1"></span><button class="btn" id="ccsv">CSV出力</button><button class="btn p" id="cnew">＋ 締めを追加</button></div>
+${sum?`<div class="chips"><select id="cmon" style="width:auto">${mos.map(m=>`<option value="${m}"${(st.cmon||mos[0])===m?' selected':''}>${mlab(m)}</option>`).join('')}<option value="__all"${st.cmon==='__all'?' selected':''}>全期間</option></select><span class="mut">同名のイベントを月ごとにまとめ、末日付けで集計します（日別に入力した金額を自動合計）</span></div>`
+:`<input id="cq" type="search" placeholder="🔍 イベント名・クライアント・担当者で検索" value="${esc(st.cq)}" autocomplete="off"><div class="chips"><select id="cev" style="width:auto"><option value="">イベント：すべて</option>${evs.map(e=>`<option${nk(e)===nk(st.ce)?' selected':''}>${esc(e)}</option>`).join('')}</select><select id="cmo" style="width:auto"><option value="">月：すべて</option>${mos.map(m=>`<option value="${m}"${m===st.cm?' selected':''}>${mlab(m)}</option>`).join('')}</select>${[['all','すべて'],['inv','請求書 未作成'],['pay','支払 未完了'],['done','完了']].map(([k,l])=>`<button class="fc${st.cf===k?' on':''}" data-cf="${k}">${l}</button>`).join('')}</div>`}</div><div id="csum" class="mut" style="margin-bottom:8px"></div><div id="res"></div>`;updClose()}
+function updClose(){if(!$('#csum'))return;st.cv==='sum'?updSum():updList()}
+function updList(){const q=nz(st.cq),L=CL.filter(c=>{if(q&&!nz(c.event+c.client+c.manager).includes(q))return false;if(st.ce&&nk(c.event)!==nk(st.ce))return false;if(st.cm&&(c.date||'').slice(0,7)!==st.cm)return false;const{n,p}=payStat(c);return st.cf==='inv'?!c.invoiced:st.cf==='pay'?n>0&&p<n:st.cf==='done'?c.invoiced&&n>0&&p===n:true}).sort((a,b)=>(b.date||'').localeCompare(a.date||'')),
+ uninv=CL.filter(c=>!c.invoiced).length,unAmt=CL.reduce((s,c)=>s+totAmt(c)-paidAmtC(c),0),unpaid=CL.reduce((s,c)=>{const x=payStat(c);return s+x.n-x.p},0);
+ $('#csum').innerHTML=`全${CL.length}件 ／ <b class="${uninv?'warn':'ok'}">請求書 未作成 ${uninv}件</b> ／ <b class="${unpaid?'warn':'ok'}">スタッフ未払い のべ${unpaid}名${unAmt?'（'+yen(unAmt)+'）':''}</b>`;
+ $('#res').innerHTML=L.map(c=>{const{n,p}=payStat(c),k=n===0?'ng':p===n?'ok':p===0?'bad':'ask';return `<div class="row crow" data-cl="${c.id}"><div class="who"><b>${esc(c.event||'（無題）')}${c.closedAt?' <span class="pill st-ok">締め確定</span>':''}</b><small>${fdi(c.date)} ・ ${esc(c.client||'クライアント未設定')} ・ 担当 ${esc(c.manager||'—')}</small><small>作業日 ${c.days.length}日 ／ ${n}名 ／ 総額 ${yen(totAmt(c))}</small></div><label class="chk"><input type="checkbox" data-inv="${c.id}"${c.invoiced?' checked':''}> 請求書作成済</label><span class="pill st-${k}">支払 ${n?`${p}/${n}`:'—'}</span></div>`}).join('')||'<p class="mut">該当する締めがありません。「＋ 締めを追加」から作成できます。</p>'}
+function groupClosings(mk){const g=new Map();CL.forEach(c=>{const m=(c.date||'').slice(0,7);if(mk&&m!==mk)return;const key=nk(c.event)+'|'+m;let o=g.get(key);if(!o)g.set(key,o={key,event:c.event,mk:m,items:[]});o.items.push(c)});return[...g.values()]}
+function aggGroup(items){const dates=new Map(),staff=new Map();let tot=0,paidAmt=0,ent=0,paidN=0,sentN=0,extra=0,extraPaid=0;const D=d=>dates.get(d)||dates.set(d,{date:d,tot:0,paid:0,n:0}).get(d);
+ items.forEach(c=>{(c.days.length?c.days.map(z=>z.date):[c.date]).forEach(D);c.staff.forEach(s=>{ent++;const t=entryTotal(s);tot+=t;paidAmt+=entryPaidAmt(s);extra+=num(s.extra);if(s.extraPaid)extraPaid+=num(s.extra);if(entryPaid(s))paidN++;if(entrySent(s))sentN++;
+  s.days.forEach(d=>{const r=D(d),a=dayAmt(s,d);r.tot+=a;r.n++;if(rc(s,d).paid)r.paid+=a});
+  const o=staff.get(s.sid)||{sid:s.sid,days:0,dsum:0,extra:0,tot:0,paidDays:0,sentDays:0,n:0};o.days+=s.days.length;o.dsum+=entryDaySum(s);o.extra+=num(s.extra);o.tot+=t;o.paidDays+=paidDays(s);o.sentDays+=sentDays(s);o.n++;staff.set(s.sid,o)})});
+ return{n:items.length,dates:[...dates.values()].sort((a,b)=>a.date<b.date?-1:1),staff,ent,tot,paidAmt,paidN,sentN,extra,extraPaid,inv:items.filter(c=>c.invoiced).length}}
+function updSum(){const mos=monthsOf(),mk=st.cmon==='__all'?'':(st.cmon||mos[0]||''),gs=groupClosings(mk).sort((a,b)=>a.mk===b.mk?a.event.localeCompare(b.event,'ja'):b.mk.localeCompare(a.mk));let T={tot:0,paid:0,n:0,ent:0,sent:0};
+ const html=gs.map(g=>{const a=aggGroup(g.items),open=st.cop.has(g.key);T.tot+=a.tot;T.paid+=a.paidAmt;T.n+=a.n;T.ent+=a.ent;T.sent+=a.sentN;const k=!a.ent?'ng':a.paidN===a.ent?'ok':a.paidAmt?'ask':'bad';
+  return `<div class="grp"><div class="row crow" data-gk="${esc(g.key)}"><div class="who"><b>${open?'▼':'▶'} ${esc(g.event)}</b><small>${mlab(g.mk)}分 ／ 末日 ${fdi(lastDay(g.mk))}</small><small>締め ${a.n}件 ／ 作業日 ${a.dates.length}日 ／ スタッフ ${a.staff.size}名（延べ${a.ent}名）</small></div><div class="gst"><span class="pill st-${k}">総額 ${yen(a.tot)}</span><small>済 ${yen(a.paidAmt)} ／ 未 ${yen(a.tot-a.paidAmt)}</small></div><div class="gst"><small>請求書 ${a.inv}/${a.n}</small><small>明細送付 ${a.sentN}/${a.ent}</small></div></div>${open?grpDetail(g,a):''}</div>`}).join('');
+ $('#csum').innerHTML=gs.length?`${mk?mlab(mk):'全期間'} ／ ${gs.length}イベント ／ <b>総額 ${yen(T.tot)}</b>（済 ${yen(T.paid)} ／ <b class="${T.tot-T.paid>0?'warn':'ok'}">未 ${yen(T.tot-T.paid)}</b>） ／ 明細送付 ${T.sent}/${T.ent}`:'';
+ $('#res').innerHTML=html||'<p class="mut">集計できる締めがありません。「締め一覧」から締めを追加してください。</p>'}
+function grpDetail(g,a){const L=[...a.staff.values()].sort((x,y)=>x.sid-y.sid),b=t=>`<button class="btn s" data-gb="${t}|${esc(g.key)}">`;
+ return `<div class="gdet"><div class="chips" style="margin-top:6px">${b('inv')}請求書をすべて作成済にする</button>${b('pay')}支払をすべて済にする</button>${b('sent')}明細をすべて送付済にする</button></div>
+<h4>日別の内訳（入力済みの金額を自動合計）</h4><div class="sc" style="max-height:300px"><table class="mx" style="width:100%"><thead><tr><th class="nm1">日付</th><th>人数</th><th>金額合計</th><th>支払済</th><th>未払</th></tr></thead><tbody>${a.dates.map(r=>`<tr><th class="nm1">${fdi(r.date)}</th><td>${r.n}</td><td>${yen(r.tot)}</td><td>${yen(r.paid)}</td><td>${yen(r.tot-r.paid)}</td></tr>`).join('')}${a.extra?`<tr><th class="nm1">その他（日付なし）</th><td>—</td><td>${yen(a.extra)}</td><td>${yen(a.extraPaid)}</td><td>${yen(a.extra-a.extraPaid)}</td></tr>`:''}</tbody><tfoot><tr><td class="nm1" style="text-align:left">総額</td><td></td><td>${yen(a.tot)}</td><td>${yen(a.paidAmt)}</td><td>${yen(a.tot-a.paidAmt)}</td></tr></tfoot></table></div>
+<h4>締め（${g.items.length}件）</h4><ul class="h">${g.items.slice().sort((x,y)=>(x.date||'').localeCompare(y.date||'')).map(c=>{const p=payStat(c);return `<li data-cl="${c.id}" style="cursor:pointer;flex-wrap:wrap;gap:8px;align-items:center"><span style="min-width:62px">${fdi(c.date)}</span><span>${esc(c.client||'—')} ／ 担当 ${esc(c.manager||'—')}</span><span class="pill st-${c.invoiced?'ok':'bad'}">請求書 ${c.invoiced?'済':'未'}</span><small class="mut">支払 ${p.p}/${p.n} ・ 総額 ${yen(totAmt(c))}</small></li>`}).join('')}</ul>
+<h4>スタッフ別 合計（${L.length}名）</h4><div class="sc" style="max-height:340px"><table class="mx" style="width:100%"><thead><tr><th class="nm1">スタッフ</th><th>出勤日数</th><th>日別合計</th><th>その他</th><th>総額</th><th>支払(日)</th><th>明細(日)</th></tr></thead><tbody>${L.map(o=>{const r=byId.get(o.sid);return `<tr><th class="nm1"${r?` data-id="${o.sid}"`:''}>${r?esc(r.name):'#'+o.sid}</th><td>${o.days}</td><td>${yen(o.dsum)}</td><td>${yen(o.extra)}</td><td><b>${yen(o.tot)}</b></td><td class="st-${o.paidDays===o.days&&o.days?'ok':o.paidDays?'ask':'bad'}">${o.paidDays}/${o.days}</td><td class="st-${o.sentDays===o.days&&o.days?'ok':o.sentDays?'ask':'ng'}">${o.sentDays}/${o.days}</td></tr>`}).join('')||'<tr><td colspan="7" class="mut">スタッフがいません</td></tr>'}</tbody><tfoot><tr><td class="nm1" style="text-align:left">合計</td><td>${L.reduce((t,o)=>t+o.days,0)}</td><td>${yen(L.reduce((t,o)=>t+o.dsum,0))}</td><td>${yen(a.extra)}</td><td>${yen(a.tot)}</td><td></td><td></td></tr></tfoot></table></div></div>`}
+function groupBulk(v){const i=v.indexOf('|'),type=v.slice(0,i),key=v.slice(i+1),g=groupClosings(key.slice(-7)).find(x=>x.key===key)||groupClosings('').find(x=>x.key===key);if(!g)return;
+ g.items.forEach(c=>{if(type==='inv'&&!c.invoiced){c.invoiced=true;c.invoicedAt=todayIso}c.staff.forEach(s=>{if(type==='pay'){s.days.forEach(d=>{const r=getRec(s,d);if(!r.paid){r.paid=true;r.paidAt=todayIso}});if(num(s.extra)&&!s.extraPaid){s.extraPaid=true;s.extraPaidAt=todayIso}}if(type==='sent')s.days.forEach(d=>{const r=getRec(s,d);if(!r.sent){r.sent=true;r.sentAt=todayIso}})})});saveCl();updSum();toast('✔ 更新しました')}
+
+/* 締めの追加（プルダウン入力） */
+function closingForm(){track(closingForm,[],'締めの追加',1);open(`<h3>＋ 締めを追加</h3><div class="fg"><label class="fl">イベント名 *${eventSel('k_event','')}</label><label class="fl">開催日 *<input id="k_date" type="date"><select id="k_dsel"><option value="">カレンダーから選ぶ</option></select></label><label class="fl">担当者${comboHtml('k_manager',uniq(CL.map(c=>c.manager)),'')}</label><label class="fl">クライアント${comboHtml('k_client',clientNames(),'')}</label></div><label class="chk" style="margin:4px 0"><input type="checkbox" id="k_inv"> 請求書 作成済み</label>
+<div class="box"><label class="chk"><input type="checkbox" id="k_imp" disabled> <b>シフト表から作業日と「確定」スタッフを取り込む</b></label><div class="chips" style="margin-top:6px"><select id="k_imon" style="width:auto" disabled><option value="">月</option></select><small class="mut" id="k_imsg">イベント名をシフト表の現場から選ぶと使えます</small></div></div><p id="kerr" class="err"></p>${mfoot('<button class="btn p big" id="ksave">✔ 確定する（作成）</button>')}`)}
+function kEvent(){const ev=comboVal('k_event'),c=dateCands(ev);setTimeout(()=>{const ls=clientsOfEvent(ev),s=$('#k_client');if(s&&ls.length===1&&!s.value&&[...s.options].some(o=>o.value===ls[0]))s.value=ls[0]},0);$('#k_dsel').innerHTML=dateOpts(ev);
+ const mis=M.map((m,i)=>i).filter(i=>M[i].cols.some(col=>!col.del&&nk(col.site)===nk(ev))).sort((a,b)=>M[b].key.localeCompare(M[a].key)),imp=$('#k_imp'),im=$('#k_imon');
+ imp.disabled=im.disabled=!mis.length;imp.checked=!!mis.length;im.innerHTML=mis.map(i=>`<option value="${i}">${M[i].label}</option>`).join('')||'<option value="">月</option>';
+ $('#k_imsg').textContent=mis.length?'選んだ月の、この現場の作業日と確定スタッフが自動で入ります':'イベント名をシフト表の現場から選ぶと使えます';
+ if(c.length&&!$('#k_date').value){$('#k_date').value=c.slice().sort((a,b)=>Math.abs(new Date(a)-today)-Math.abs(new Date(b)-today))[0];kDate()}}
+function kDate(){const d=$('#k_date').value,im=$('#k_imon');if(!d||im.disabled)return;const i=M.findIndex(m=>m.key===d.slice(0,7));if(i>=0&&[...im.options].some(o=>+o.value===i))im.value=i}
+function saveClosing(){const err=m=>{$('#kerr').textContent=m},ev=comboVal('k_event'),d0=$('#k_date').value;if(!ev)return err('イベント名を選択（または入力）してください');if(!d0)return err('開催日を入力してください');
+ const inv=$('#k_inv').checked,c={id:'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),event:ev,date:d0,manager:comboVal('k_manager'),client:comboVal('k_client'),invoiced:inv,invoicedAt:inv?todayIso:'',memo:'',days:[],staff:[],closedAt:'',closedTotal:0};
+ if($('#k_imp').checked&&$('#k_imon').value!==''){const mi=+$('#k_imon').value,mp=new Map();M[mi].cols.forEach((col,ci)=>{if(col.del||nk(col.site)!==nk(ev))return;const d=iso(dt(mi,ci));if(!c.days.some(x=>x.date===d))c.days.push({date:d,note:''});(cell.get(mi+'_'+ci)||[]).forEach(([id,v])=>{if(v==='確定'&&byId.has(id)){const a=mp.get(id)||[];if(!a.includes(d))a.push(d);mp.set(id,a)}})});
+  c.days.sort((a,b)=>a.date<b.date?-1:1);mp.forEach((ds,id)=>c.staff.push(newEntry(id,ds.sort())))}
+ if(!c.client){const cs=clientsOfEvent(ev);if(cs.length===1)c.client=cs[0]}CL.push(c);saveCl();st.tab==='close'?rClose():go('close');showClose(c.id);toast('✔ 締めを作成しました')}
+
+/* 締め詳細：日別マトリクス（出勤／金額／支払／明細送付） */
+const ctot=c=>{const t=totAmt(c),p=paidAmtC(c),dsum=c.staff.reduce((a,s)=>a+entryDaySum(s),0),ex=c.staff.reduce((a,s)=>a+num(s.extra),0);return `<b>総額 ${yen(t)}</b>（日別合計 ${yen(dsum)} ＋ その他 ${yen(ex)}） ／ 支払済 ${yen(p)} ／ <b class="${t-p>0?'warn':'ok'}">未払 ${yen(t-p)}</b>`};
+const closeBox=c=>c.closedAt?`<span class="ok"><b>✔ 締め確定済</b>（${fdi(c.closedAt)}）確定時の総額 ${yen(c.closedTotal)}</span>${totAmt(c)!==num(c.closedTotal)?` <span class="warn">※確定後に変更あり（現在 ${yen(totAmt(c))} ／ 差額 ${yen(totAmt(c)-num(c.closedTotal))}）</span>`:''} <button class="btn s" id="cunclose">確定を解除</button>`:`<span class="mut">日別に入力した金額が自動で合計されます。内容を確認したら確定してください。</span> <button class="btn s p" id="cclose">✔ 締めを確定（総額を記録）</button>`;
+function dynText(c,key){const[k,a]=key.split('|'),m=st.pm;
+ if(k==='r'){const s=c.staff[+a];return m==='amt'?yen(entryTotal(s)):m==='pay'?`${yen(entryPaidAmt(s))}（${paidDays(s)}/${s.days.length}日）`:m==='snt'?`${sentDays(s)}/${s.days.length}日`:`${s.days.length}日`}
+ const col=a?c.staff.filter(s=>s.days.includes(a)):c.staff;
+ if(k==='f'){return m==='amt'?yen(col.reduce((t,s)=>t+dayAmt(s,a),0)):m==='pay'?yen(col.reduce((t,s)=>t+(rc(s,a).paid?dayAmt(s,a):0),0)):m==='snt'?`${col.filter(s=>rc(s,a).sent).length}/${col.length}`:`${col.length}名`}
+ if(k==='fx')return m==='amt'?yen(c.staff.reduce((t,s)=>t+num(s.extra),0)):yen(c.staff.reduce((t,s)=>t+(s.extraPaid?num(s.extra):0),0));
+ if(k==='fa')return m==='amt'?yen(totAmt(c)):m==='pay'?yen(paidAmtC(c)):m==='snt'?`${c.staff.reduce((t,s)=>t+sentDays(s),0)}/${c.staff.reduce((t,s)=>t+s.days.length,0)}日`:`${c.staff.reduce((t,s)=>t+s.days.length,0)}日`;return ''}
+function refreshDyn(c){document.querySelectorAll('#cmat [data-dyn]').forEach(e=>{e.textContent=dynText(c,e.dataset.dyn)});const t=$('#ctot');if(t)t.innerHTML=ctot(c);const b=$('#cbox');if(b)b.innerHTML=closeBox(c)}
+function matHtml(c){const m=st.pm,days=c.days;
+ const th=days.map(d=>`<th>${fdm(d.date)}<br><small>${fdi(d.date).slice(-3)}</small></th>`).join(''),tail=m==='amt'?'<th>その他</th><th>総額</th>':m==='pay'?'<th>その他</th><th>支払済額</th>':m==='snt'?'<th>発行日</th><th>送付</th>':'<th>日数</th>';
+ const rows=c.staff.map((s,i)=>{const r=byId.get(s.sid);const cells=days.map(d=>{const att=s.days.includes(d.date),k=`${i}|${d.date}`,x=rc(s,d.date);
+  if(m==='att')return `<td><input type="checkbox" data-ax="${k}"${att?' checked':''}></td>`;if(!att)return '<td class="na">—</td>';
+  return m==='amt'?`<td><input class="cin" type="number" min="0" step="100" data-dv="${k}" data-fld="amount" value="${x.amount===''?'':x.amount}"></td>`:m==='pay'?`<td><input type="checkbox" data-dv="${k}" data-fld="paid"${x.paid?' checked':''}></td>`:`<td><input type="date" data-dv="${k}" data-fld="sentAt" value="${esc(x.sentAt||'')}" style="width:128px;padding:3px"></td>`}).join('');
+  const tl=m==='amt'?`<td><input class="cin" type="number" min="0" step="100" data-ex="${i}" value="${s.extra===''?'':s.extra}"></td><td class="dyn" data-dyn="r|${i}"></td>`:m==='pay'?`<td>${num(s.extra)?`<input type="checkbox" data-exp="${i}"${s.extraPaid?' checked':''}>`:'<span class="na">—</span>'}</td><td class="dyn" data-dyn="r|${i}"></td>`:m==='snt'?`<td><input type="date" data-slip="${i}" value="${esc(s.slip||'')}" style="width:128px;padding:3px"></td><td class="dyn" data-dyn="r|${i}"></td>`:`<td class="dyn" data-dyn="r|${i}"></td>`;
+  return `<tr><th class="nm1">${r?`<span data-id="${s.sid}" style="cursor:pointer">${esc(r.name)}</span>`:`<span class="mut">#${s.sid}</span>`} <button class="btn d s" data-srm="${i}" title="この締めから外す" style="padding:0 6px">✕</button></th>${cells}${tl}</tr>`}).join('');
+ const foot=`<tr><td class="nm1" style="text-align:left">${m==='amt'?'日別合計':m==='pay'?'日別 支払済額':m==='snt'?'日別 送付人数':'日別 出勤人数'}</td>${days.map(d=>`<td data-dyn="f|${d.date}"></td>`).join('')}${m==='amt'||m==='pay'?'<td data-dyn="fx|"></td><td data-dyn="fa|"></td>':m==='snt'?'<td></td><td data-dyn="fa|"></td>':'<td data-dyn="fa|"></td>'}</tr>`;
+ return `<div class="sc" style="max-height:52vh"><table class="mx"><thead><tr><th class="nm1">スタッフ</th>${th}${tail}</tr></thead><tbody>${rows||`<tr><td colspan="${days.length+3}" class="mut" style="padding:12px;text-align:left">スタッフがまだいません</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>`}
+function bulkHtml(c){const m=st.pm,sel=`<select id="bsel" style="width:auto"><option value="">全ての日</option>${c.days.map(d=>`<option value="${d.date}">${fdi(d.date)}</option>`).join('')}</select>`,b=(a,l,p)=>`<button class="btn s${p?' p':''}" data-ba="${a}">${l}</button>`;
+ return m==='att'?`<div class="chips">${b('att-all','全員を全日出勤にする')}</div>`:m==='amt'?`<div class="chips"><span class="mut">一括入力：</span>${sel}<input type="number" min="0" id="bval" placeholder="金額(日額)" style="width:120px">${b('amt-all','出勤者に入力',1)}${b('amt-empty','空欄の所だけ入力')}</div>`
+ :m==='pay'?`<div class="chips"><span class="mut">一括：</span>${sel}${b('pay-on','支払済にする',1)}${b('pay-off','未払いに戻す')}</div>`:`<div class="chips"><span class="mut">一括：</span>${sel}<input type="date" id="bval" style="width:auto">${b('snt-set','この日付で送付済にする',1)}${b('snt-today','本日付で送付済にする')}${b('snt-clear','送付をクリア')}</div>`}
+function renderMat(c){const sc=$('#cmat .sc'),y=sc?sc.scrollTop:0,x=sc?sc.scrollLeft:0;$('#cmat').innerHTML=matHtml(c);$('#cbulk').innerHTML=bulkHtml(c);document.querySelectorAll('[data-pm]').forEach(b=>b.classList.toggle('on',b.dataset.pm===st.pm));refreshDyn(c);const n=$('#cmat .sc');if(n){n.scrollTop=y;n.scrollLeft=x}}
+function bulkApply(a,c){const ds=$('#bsel')?$('#bsel').value:'',v=$('#bval')?$('#bval').value:'',all=!ds;
+ if(a==='att-all'){c.staff.forEach(s=>{s.days=c.days.map(z=>z.date)})}
+ else{if((a==='amt-all'||a==='amt-empty')&&(v===''||!(+v>=0)))return toast('金額を入力してください');if(a==='snt-set'&&!v)return toast('送付日を選んでください');
+  c.staff.forEach(s=>s.days.forEach(d=>{if(ds&&d!==ds)return;const r=getRec(s,d);
+   if(a==='amt-all')r.amount=+v;else if(a==='amt-empty'){if(r.amount==='')r.amount=+v}else if(a==='pay-on'){r.paid=true;r.paidAt=todayIso}else if(a==='pay-off'){r.paid=false;r.paidAt=''}
+   else if(a==='snt-set'){r.sent=true;r.sentAt=v}else if(a==='snt-today'){r.sent=true;r.sentAt=todayIso}else if(a==='snt-clear'){r.sent=false;r.sentAt=''}}));
+  if(all&&(a==='pay-on'||a==='pay-off'))c.staff.forEach(s=>{if(num(s.extra)){s.extraPaid=a==='pay-on';s.extraPaidAt=a==='pay-on'?todayIso:''}})}
+ saveCl();renderMat(c);toast('✔ 反映しました')}
+function showClose(id){track(showClose,[id],'締め詳細',0);const c=clById(id);if(!c)return;const sc=($('.mb')||{}).scrollTop||0,{n,p}=payStat(c),cands=dateCands(c.event).filter(d=>!c.days.some(z=>z.date===d));
+ open(`<div id="cdet" data-cid="${c.id}"><h3>締め詳細</h3><div class="fg"><label class="fl">イベント名${eventSel('d_event',c.event,'data-f="event"')}</label><label class="fl">開催日<input type="date" data-f="date" value="${esc(c.date)}"><select data-dsel="1">${dateOpts(c.event)}</select></label><label class="fl">担当者${comboHtml('d_manager',uniq(CL.map(z=>z.manager)),c.manager,'data-f="manager"')}</label><label class="fl">クライアント${comboHtml('d_client',clientNames(),c.client,'data-f="client"')}</label></div>
+${schedInfoHtml(c)}<div class="box"><label class="chk"><input type="checkbox" data-f="invoiced"${c.invoiced?' checked':''}> <b>請求書 作成済み</b></label><small class="mut" id="inva">${c.invoiced&&c.invoicedAt?'作成日 '+fdi(c.invoicedAt):'未作成'}</small></div>
+<label class="fl" style="margin-top:8px">メモ<input type="text" data-f="memo" value="${esc(c.memo||'')}"></label>
+<h4>📅 作業日（${c.days.length}日）</h4>${c.days.map((d,i)=>`<div class="er2"><input type="date" data-dd="${i}" data-k="date" value="${esc(d.date)}"><input type="text" data-dd="${i}" data-k="note" value="${esc(d.note)}" placeholder="作業内容（例：設営 8:00-20:00）"><button class="btn d s" data-ddel="${i}">✕</button></div>`).join('')||'<p class="mut" style="margin:4px 0">作業日がまだありません</p>'}
+<div class="er2"><input type="date" id="nd_date"><input type="text" id="nd_note" placeholder="作業内容（任意）"><button class="btn s" id="ndadd">＋ 追加</button></div>
+<div class="box"><b>📆 日程をまとめて追加（複数日OK）</b><div class="chips" style="margin:6px 0">${cands.map(d=>`<button class="fc" data-dc="${d}">${d.slice(0,4)===String(today.getFullYear())?fdm(d):d.replace(/-/g,'/')}<small>${fdi(d).slice(-3)}</small></button>`).join('')||'<small class="mut">追加できる候補日はありません（シフト表に、この現場の未登録の日がありません）</small>'}</div>
+<div class="chips"><button class="btn s" id="dcall">候補を全部選ぶ</button><button class="btn s p" id="dcadd">選んだ日を追加</button><label class="chk"><input type="checkbox" id="dsync" checked> シフトの「確定」スタッフも反映</label></div>
+<div class="chips" style="margin-top:6px"><span class="mut">期間で追加：</span><input type="date" id="rg_a" style="width:auto"> 〜 <input type="date" id="rg_b" style="width:auto"><button class="btn s" id="rgadd">期間を追加</button></div>
+<div class="chips" style="margin-top:6px"><button class="btn s" id="resync">🔄 シフトの「確定」スタッフを再取り込み</button></div></div>
+<h4>💴 日別の支払・給料明細（${n}名 ／ 支払済 ${p}名）</h4><div class="box" id="cbox"></div><div id="ctot" style="margin:6px 0"></div>
+<div class="chips"><div class="seg">${[['att','出勤'],['amt','金額'],['pay','支払'],['snt','明細送付']].map(([k,l])=>`<button data-pm="${k}" class="${st.pm===k?'on':''}">${l}</button>`).join('')}</div><small class="mut">日付ごとに入力できます（出勤→金額→支払→明細送付）</small></div>
+<div id="cmat" style="margin-top:8px"></div><div id="cbulk" class="box"></div>
+<input id="cs" type="search" placeholder="➕ スタッフを検索して追加（名前・カナ・ID）" autocomplete="off" style="margin-top:8px"><div id="csr" class="names" style="margin-top:6px"></div>
+<div class="acts"><button class="btn d" id="cdel">この締めを削除</button></div></div>`);$('.mb').classList.add('wide');renderMat(c);$('.mb').scrollTop=sc}
+function cdetChange(t){const cl=clById(t.closest('#cdet').dataset.cid);if(!cl)return;let re=false,dyn=false;
+ if(t.dataset.dsel!==undefined){if(t.value){cl.date=t.value;$('#cdet [data-f=date]').value=t.value;saveCl();toast('💾 保存しました')}return}
+ if(t.dataset.f){const f=t.dataset.f;if(f==='invoiced'){cl.invoiced=t.checked;cl.invoicedAt=t.checked?todayIso:'';$('#inva').textContent=t.checked?'作成日 '+fdi(todayIso):'未作成'}else{const v=t.value.trim();if(f==='event'&&!v){toast('イベント名は空にできません');return showClose(cl.id)}cl[f]=v;if(f==='event')re=true}}
+ else if(t.dataset.dd!==undefined){const d=cl.days[+t.dataset.dd];if(t.dataset.k==='date'){if(!t.value){t.value=d.date;return}const old=d.date;d.date=t.value;cl.staff.forEach(s=>{s.days=s.days.map(z=>z===old?d.date:z);if(s.pay&&s.pay[old]){s.pay[d.date]=s.pay[old];delete s.pay[old]}});re=true}else d.note=t.value.trim()}
+ else if(t.dataset.ax){const[i,d]=t.dataset.ax.split('|'),s=cl.staff[+i];s.days=t.checked?[...new Set([...s.days,d])].sort():s.days.filter(z=>z!==d);saveCl();return renderMat(cl)}
+ else if(t.dataset.dv){const[i,d]=t.dataset.dv.split('|'),r=getRec(cl.staff[+i],d),f=t.dataset.fld;if(f==='amount')r.amount=t.value===''?'':Math.max(0,+t.value||0);else if(f==='paid'){r.paid=t.checked;r.paidAt=t.checked?todayIso:''}else if(f==='sentAt'){r.sentAt=t.value;r.sent=!!t.value}dyn=true}
+ else if(t.dataset.ex!==undefined){cl.staff[+t.dataset.ex].extra=t.value===''?'':Math.max(0,+t.value||0);dyn=true}
+ else if(t.dataset.exp!==undefined){const s=cl.staff[+t.dataset.exp];s.extraPaid=t.checked;s.extraPaidAt=t.checked?todayIso:'';dyn=true}
+ else if(t.dataset.slip!==undefined){cl.staff[+t.dataset.slip].slip=t.value}
+ else return;
+ saveCl();if(re)return showClose(cl.id);if(dyn)refreshDyn(cl);toast('💾 保存しました')}
+async function exportClosings(){if(!CL.length)return toast('締めデータがありません');
+ const rows=[['イベント名','開催日','末日','クライアント','担当者','請求書作成','請求書作成日','締め確定日','スタッフID','氏名','区分','作業日','作業内容','金額','支払','支払日','明細送付','明細送付日','明細発行日','メモ']];
+ CL.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).forEach(c=>{const base=[c.event,c.date,lastDay((c.date||'').slice(0,7)),c.client,c.manager,c.invoiced?'済':'未',c.invoicedAt||'',c.closedAt||''],note=d=>(c.days.find(z=>z.date===d)||{}).note||'';
+  if(!c.staff.length)rows.push(base.concat(['','','','','','','','','','',c.memo||'']));
+  c.staff.forEach(s=>{const r=byId.get(s.sid),id=[s.sid,r?r.name:''];s.days.slice().sort().forEach(d=>{const x=rc(s,d);rows.push(base.concat(id,['日別',d,note(d),x.amount===''?'':num(x.amount),x.paid?'済':'未',x.paidAt||'',x.sent?'済':'未',x.sentAt||'',s.slip||'',c.memo||'']))});
+   if(num(s.extra))rows.push(base.concat(id,['その他','','',num(s.extra),s.extraPaid?'済':'未',s.extraPaidAt||'','','',s.slip||'',c.memo||'']))})});
+ const q=v=>/[",\r\n]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':String(v);
+ await saveBlob(new Blob(['\uFEFF'+rows.map(r=>r.map(q).join(',')).join('\r\n')+'\r\n'],{type:'text/csv'}),`締めデータ_${todayIso.replace(/-/g,'')}.csv`)}
+
+let bk=null;
+async function backupOut(){const staff=R.map(r=>({...pick(r),skills:r.skills||{},ng:r.ng||''}));
+ const r=await saveBlob(new Blob([JSON.stringify({app:'staff-dashboard',v:1,at:new Date().toISOString(),ov:OV,cn:CN,cl:CL,cx:CX,staff})],{type:'application/json'}),`スタッフ管理バックアップ_${todayIso.replace(/-/g,'')}.json`);if(r.ok)toast(`✔ ${r.name} を書き出しました`)}
+async function loadBackup(file){const p=$('#bkp');if(!file)return;try{const d=JSON.parse(await file.text());if(d.app!=='staff-dashboard')throw new Error('このアプリのバックアップファイルではありません');bk=d;
+ p.innerHTML=`<div class="box">スタッフ ${(d.staff||[]).length}名 ／ キャスナビ全データ ${Object.keys(d.cn||{}).length}名 ／ 締め ${(d.cl||[]).length}件 ／ 作成 ${esc((d.at||'').slice(0,16).replace('T',' '))}<br><small class="warn">このブラウザの現在の登録・編集内容は、バックアップの内容で置き換わります。</small></div><div class="acts"><button class="btn p" id="bkgo">復元する</button></div>`}catch(e){bk=null;p.innerHTML=`<p class="bad">${esc(e.message||e)}</p>`}}
+function runRestore(){if(!bk)return;const ov=Object.assign({staff:{},colEdits:{},colAdds:{},months:[],cells:{}},bk.ov||{});(bk.staff||[]).forEach(s=>{ov.staff[s.id]={...(ov.staff[s.id]||{}),...s}});
+ OV=ov;CN=bk.cn||{};CL=bk.cl||[];CX=bk.cx||{clients:[],links:[]};save();saveCn();saveCl();saveCx();$('#bkp').innerHTML='<p class="ok">⏳ 復元中…</p>';STORE.flushNow().then(()=>{$('#bkp').innerHTML='<p class="ok">✔ 復元しました。再読み込みします…</p>';setTimeout(()=>location.reload(),500)})}
+
+/* ---------- 戻る／TOP ---------- */
+let curM=null,mStack=[],tabH=[],navFlag=false,goFlag=false;
+function track(f,a,label,loose){if(navFlag){curM={f,a,label,loose};return}const same=curM&&curM.f===f&&(loose||JSON.stringify(curM.a)===JSON.stringify(a));if(!same&&curM&&!$('#ov').hidden)mStack.push(curM);curM={f,a,label,loose}}
+const navbar=()=>{const p=mStack[mStack.length-1];return `<div class="mnav"><button class="btn s" data-nav="back">← 戻る${p?'（'+esc(p.label)+'）':''}</button><button class="btn s" data-nav="top">🏠 TOP</button></div>`};
+function navBack(){if(!$('#ov').hidden){const p=mStack.pop();if(p){navFlag=true;try{p.f(...p.a)}finally{navFlag=false}return}closeModal();return}
+ const t=tabH.pop();if(t){goFlag=true;try{go(t)}finally{goFlag=false}window.scrollTo(0,0)}else toast('これ以上戻れません')}
+function navTop(){closeModal();st.q='';st.grades.clear();st.sex='';st.act=false;st.ret=false;st.unp=false;st.nsl=false;st.lim=60;go('roster');window.scrollTo(0,0)}
+
+/* ---------- 締め：カレンダーから直接／複数日選択 ---------- */
+const sel=()=>(st.sel=st.sel||{mi:null,site:'',cols:new Set()}),monthCols=s=>M[s.mi].cols.map((c,i)=>i).filter(i=>!M[s.mi].cols[i].del&&nk(M[s.mi].cols[i].site)===nk(s.site));
+function selToggle(mi,ci){const s=sel(),site=M[mi].cols[ci].site;if(s.mi!==mi||s.site!==site){s.mi=mi;s.site=site;s.cols=new Set()}s.cols.has(ci)?s.cols.delete(ci):s.cols.add(ci);if(!s.cols.size){s.mi=null;s.site=''}renderSel();updShift()}
+function renderSel(){const el=$('#selbar');if(!el)return;const s=sel();
+ if(!s.cols.size){el.innerHTML='<span class="mut">💴 締めにするイベントをクリックしてください。複数日のイベント（家政など）は、続けて日付をクリックするか、1日目を選んでから「この月の全日程」を押してください。</span>';return}
+ const ds=[...new Set([...s.cols].map(ci=>iso(dt(s.mi,ci))))].sort();
+ el.innerHTML=`<b>${esc(s.site)}</b>　${ds.length}日 <small class="mut">${ds.map(fdm).join('、')}</small><div class="chips" style="margin-top:6px"><button class="btn s" data-sel="all">この月の全日程（${monthCols(s).length}件）</button><button class="btn s" data-sel="clear">選択解除</button><button class="btn s p" data-sel="go">💴 この日程で締めを作成／開く</button></div>`}
+function selAction(a){const s=sel();if(a==='clear'){st.sel={mi:null,site:'',cols:new Set()};renderSel();return updShift()}if(a==='all'&&s.site){s.cols=new Set(monthCols(s));renderSel();return updShift()}if(a==='go'&&s.cols.size)return openClosingFor(s.site,s.mi,[...s.cols])}
+function shiftOn(site,date){const ids=new Set();let info=false;M.forEach((m,mi)=>m.cols.forEach((c,ci)=>{if(c.del||nk(c.site)!==nk(site)||iso(dt(mi,ci))!==date)return;info=true;(cell.get(mi+'_'+ci)||[]).forEach(([id,v])=>{if(v==='確定'&&byId.has(id))ids.add(id)})}));return{ids,info}}
+function addDays(cl,dates,withShift,force){const added=[];dates.forEach(d=>{if(!cl.days.some(z=>z.date===d)){cl.days.push({date:d,note:''});added.push(d)}});cl.days.sort((a,b)=>a.date<b.date?-1:1);
+ (force?dates:added).forEach(d=>{const sh=withShift?shiftOn(cl.event,d):{ids:new Set(),info:false};
+  if(sh.info){sh.ids.forEach(id=>{let s=cl.staff.find(z=>z.sid===id);if(!s){s=newEntry(id,[]);cl.staff.push(s)}if(!s.days.includes(d)){s.days.push(d);s.days.sort()}})}
+  else if(!force)cl.staff.forEach(s=>{if(!s.days.includes(d)){s.days.push(d);s.days.sort()}})});return added}
+function openClosingFor(site,mi,cols){const mk=M[mi].key,dates=[...new Set(cols.map(ci=>iso(dt(mi,ci))))].sort(),ov=c=>c.days.filter(z=>dates.includes(z.date)).length,
+ cand=CL.filter(c=>nk(c.event)===nk(site)&&(c.date||'').slice(0,7)===mk).sort((a,b)=>ov(b)-ov(a)||(a.date||'').localeCompare(b.date||''))[0];let cl=cand,created=false;
+ if(!cl){cl={id:'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),event:site,date:dates[0],manager:'',client:'',invoiced:false,invoicedAt:'',memo:'',days:[],staff:[],closedAt:'',closedTotal:0};CL.push(cl);created=true}
+ const added=addDays(cl,dates,true);if(!cl.client){const cs=uniq(cols.map(ci=>M[mi].cols[ci].client));if(cs.length===1)cl.client=cs[0]}saveCl();st.sel={mi:null,site:'',cols:new Set()};if(st.tab==='shift'){renderSel();updShift()}showClose(cl.id);
+ toast(created?`✔ 締めを作成しました（${dates.length}日・確定スタッフ${cl.staff.length}名）`:`✔ 既存の締めを開きました${added.length?`（${added.length}日を追加）`:''}`)}
+
+/* ---------- クライアント管理（イベント×会社×詳細の紐付け）とExcel出力 ---------- */
+let CX=STATE.CX||{clients:[],links:[]};CX.clients=CX.clients||[];CX.links=CX.links||[];
+const saveCx=()=>STORE.sync('cx'),rid=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+const clientNames=()=>uniq(CX.clients.map(c=>c.name).concat(CX.links.map(l=>l.client),CL.map(c=>c.client))).sort((a,b)=>a.localeCompare(b,'ja')),linksOf=ev=>CX.links.filter(l=>nk(l.event)===nk(ev)),allEvents=()=>uniq(schedSites().concat(closedEvents())).sort((a,b)=>a.localeCompare(b,'ja'));
+function ensureClient(name){if(name&&!CX.clients.some(c=>nk(c.name)===nk(name)))CX.clients.push({id:rid('k'),name,contact:'',memo:''})}
+function linkRows(){const rows=[],stat=(ev,cl)=>{const cs=CL.filter(c=>nk(c.event)===nk(ev)&&(cl===null||nk(c.client)===nk(cl)));return{n:cs.length,last:cs.map(c=>c.date).filter(Boolean).sort().pop()||'',amt:cs.reduce((t,c)=>t+totAmt(c),0)}};
+ CX.links.forEach(l=>rows.push({kind:'link',id:l.id,event:l.event,client:l.client,detail:l.detail||'',memo:l.memo||'',...stat(l.event,l.client)}));
+ const linked=new Set(CX.links.map(l=>nk(l.event)));allEvents().forEach(e=>{if(!linked.has(nk(e)))rows.push({kind:'un',event:e,client:'',detail:'',memo:'',...stat(e,null)})});
+ return rows.sort((a,b)=>(a.kind==='un')-(b.kind==='un')||a.event.localeCompare(b.event,'ja')||a.client.localeCompare(b.client,'ja'))}
+function clientRows(){return clientNames().map(n=>{const m=CX.clients.find(c=>nk(c.name)===nk(n)),ls=CX.links.filter(l=>nk(l.client)===nk(n)),cs=CL.filter(c=>nk(c.client)===nk(n));return{id:m?m.id:'',name:n,contact:m?m.contact:'',memo:m?m.memo:'',links:ls,n:cs.length,amt:cs.reduce((t,c)=>t+totAmt(c),0)}})}
+function rClient(){const rows=linkRows(),cls=clientNames(),evs=allEvents(),cv=st.clv==='clients';
+ $('#main').innerHTML=`<div class="bar"><div class="chips"><div class="seg"><button data-clv="links" class="${cv?'':'on'}">紐付け一覧</button><button data-clv="clients" class="${cv?'on':''}">クライアント一覧</button></div><span style="flex:1"></span><button class="btn" id="lcsv">CSV</button><button class="btn" id="xlsx">📥 Excel出力</button><button class="btn" id="clnew">＋ クライアント</button><button class="btn p" id="lnew">＋ 紐付けを追加</button></div>
+${cv?'':`<input id="lq" type="search" placeholder="🔍 イベント・会社・詳細・メモで検索" value="${esc(st.lq||'')}" autocomplete="off"><div class="chips"><select id="lcl" style="width:auto"><option value="">クライアント：すべて</option>${cls.map(c=>`<option${nk(c)===nk(st.lcl||'')?' selected':''}>${esc(c)}</option>`).join('')}</select><select id="lev" style="width:auto"><option value="">イベント：すべて</option>${evs.map(e=>`<option${nk(e)===nk(st.lev||'')?' selected':''}>${esc(e)}</option>`).join('')}</select><label class="chk"><input type="checkbox" id="lun"${st.lun===false?'':' checked'}> 未紐付けのイベントも表示</label></div>`}</div><div id="lsum" class="mut" style="margin-bottom:8px"></div><div id="res"></div>`;updClient()}
+function updClient(){if(!$('#lsum'))return;if(st.clv==='clients'){const rs=clientRows();$('#lsum').textContent=`クライアント ${rs.length}社`;
+  $('#res').innerHTML=`<div class="sc" style="max-height:none"><table class="mx lt"><thead><tr><th>会社名</th><th>連絡先・窓口</th><th>メモ</th><th>紐付けイベント（詳細）</th><th>締め件数</th><th>締め総額</th><th></th></tr></thead><tbody>${rs.map(r=>`<tr><td><b>${esc(r.name)}</b>${r.id?'':' <small class="mut">（締め・紐付けのみ）</small>'}</td><td>${esc(r.contact)}</td><td>${esc(r.memo)}</td><td>${r.links.map(l=>`<div>${esc(l.event)}${l.detail?`<small class="mut">：${esc(l.detail)}</small>`:''}</div>`).join('')||'<span class="mut">—</span>'}</td><td class="num">${r.n}</td><td class="num">${yen(r.amt)}</td><td style="white-space:nowrap"><button class="btn s" data-cx="${r.id||('n:'+esc(r.name))}">編集</button> <button class="btn s" data-lncl="${esc(r.name)}">＋紐付け</button></td></tr>`).join('')||'<tr><td colspan="7" class="mut">クライアントがまだ登録されていません。「＋ クライアント」から登録してください。</td></tr>'}</tbody></table></div>`;return}
+ const q=nz(st.lq||''),rows=linkRows().filter(r=>(st.lun!==false||r.kind==='link')&&(!q||nz(r.event+r.client+r.detail+r.memo).includes(q))&&(!st.lcl||nk(r.client)===nk(st.lcl))&&(!st.lev||nk(r.event)===nk(st.lev)));
+ const nl=CX.links.length,nu=rows.filter(r=>r.kind==='un').length;$('#lsum').innerHTML=`紐付け ${nl}件 ／ イベント ${new Set(rows.map(r=>nk(r.event))).size}件 ／ <b class="${nu?'warn':'ok'}">未紐付け ${nu}件</b>`;
+ $('#res').innerHTML=`<div class="sc" style="max-height:none"><table class="mx lt"><thead><tr><th>イベント名</th><th>クライアント（会社）</th><th>詳細（チーム名・案件名）</th><th>詳細メモ</th><th>締め件数</th><th>最新の開催日</th><th>締め総額</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr class="${r.kind==='un'?'un':''}"><td><b>${esc(r.event)}</b></td><td>${r.kind==='un'?'<span class="pill st-ask">未紐付け</span>':esc(r.client)}</td><td>${esc(r.detail)}</td><td>${esc(r.memo)}</td><td class="num">${r.n}</td><td class="num">${r.last?fdi(r.last):'—'}</td><td class="num">${r.amt?yen(r.amt):'—'}</td><td style="white-space:nowrap">${r.kind==='un'?`<button class="btn s p" data-lnev="${esc(r.event)}">＋ 紐付け</button>`:`<button class="btn s" data-lk="${r.id}">編集</button>`}</td></tr>`).join('')||'<tr><td colspan="8" class="mut">該当する紐付けがありません。「＋ 紐付けを追加」から登録してください。</td></tr>'}</tbody></table></div>`}
+function linkForm(id,ev0,cl0){track(linkForm,[id,ev0,cl0],'紐付け',1);const l=id?CX.links.find(x=>x.id===id):null,e=l||{event:ev0||'',client:cl0||'',detail:'',memo:''};
+ open(`<h3>${l?'紐付けを編集':'＋ 紐付けを追加'}</h3><p class="mut" style="margin:0 0 6px">どのイベントに、どの会社が関わるかを登録します。1つのイベントに複数の会社・詳細を紐付けられます（1件ずつ追加）。</p><div class="fg"><label class="fl">イベント名 *${eventSel('l_event',e.event)}</label><label class="fl">クライアント（会社） *${comboHtml('l_client',clientNames(),e.client)}</label><label class="fl" style="grid-column:1/-1">詳細（チーム名・案件名など）<input id="l_detail" type="text" value="${esc(e.detail)}" placeholder="例：JEF、ベレーザ、○○杯"></label><label class="fl" style="grid-column:1/-1">詳細メモ<input id="l_memo" type="text" value="${esc(e.memo)}"></label></div>${l?'':'<label class="chk" style="margin:4px 0"><input type="checkbox" id="lkcont"> 保存後、同じイベント・会社で続けて追加する</label>'}<p id="lerr" class="err"></p>${l?`<div class="acts" style="justify-content:flex-start;margin:6px 0 0"><button class="btn d" id="lkdel" data-lid="${l.id}">この紐付けを削除</button></div>`:''}${mfoot(`<button class="btn p big" id="lksave" data-lid="${l?l.id:''}">✔ 確定する（保存）</button>`)}`)}
+function saveLink(lid){const ev=comboVal('l_event'),cl=comboVal('l_client'),err=m=>{$('#lerr').textContent=m};if(!ev)return err('イベント名を選択（または入力）してください');if(!cl)return err('クライアント（会社）を選択（または入力）してください');
+ const rec={event:ev,client:cl,detail:$('#l_detail').value.trim(),memo:$('#l_memo').value.trim()},cont=!lid&&$('#lkcont')&&$('#lkcont').checked;
+ if(lid)Object.assign(CX.links.find(x=>x.id===lid),rec);else CX.links.push({id:rid('l'),...rec});ensureClient(cl);saveCx();toast('✔ 保存しました');
+ if(cont){navFlag=false;linkForm(null,ev,cl);return}closeModal()}
+function clientForm(id){track(clientForm,[id],'クライアント',1);let c=null;if(id&&id.startsWith('n:')){c={id:'',name:id.slice(2),contact:'',memo:''}}else if(id)c=CX.clients.find(x=>x.id===id);const e=c||{id:'',name:'',contact:'',memo:''},ls=e.name?CX.links.filter(l=>nk(l.client)===nk(e.name)):[];
+ open(`<h3>${e.name?'クライアントを編集':'＋ クライアントを追加'}</h3><div class="fg"><label class="fl" style="grid-column:1/-1">会社名 *<input id="c_name" type="text" value="${esc(e.name)}" placeholder="例：エールクリエート"></label><label class="fl" style="grid-column:1/-1">連絡先・担当窓口<input id="c_contact" type="text" value="${esc(e.contact)}"></label><label class="fl" style="grid-column:1/-1">メモ<input id="c_memo" type="text" value="${esc(e.memo)}"></label></div>
+${e.name?`<h4>紐付け（${ls.length}件）</h4>${ls.map(l=>`<div class="ar"><span><b>${esc(l.event)}</b> <small class="mut">${esc(l.detail)}</small></span><button class="btn s" data-lk="${l.id}">編集</button></div>`).join('')||'<p class="mut" style="margin:4px 0">まだありません</p>'}<div class="acts" style="justify-content:flex-start"><button class="btn s p" data-lncl="${esc(e.name)}">＋ このクライアントに紐付けを追加</button></div>`:''}
+<p id="lerr" class="err"></p>${e.id?`<div class="acts" style="justify-content:flex-start;margin:6px 0 0"><button class="btn d" id="cldel" data-cid="${e.id}">このクライアントを削除</button></div>`:''}${mfoot(`<button class="btn p big" id="clsave" data-cid="${e.id}">✔ 確定する（保存）</button>`)}`)}
+function saveClient(cid){const name=$('#c_name').value.trim(),err=m=>{$('#lerr').textContent=m};if(!name)return err('会社名を入力してください');
+ const dup=CX.clients.find(c=>nk(c.name)===nk(name)&&c.id!==cid);if(dup)return err('同じ名前のクライアントがすでにあります');
+ const rec={name,contact:$('#c_contact').value.trim(),memo:$('#c_memo').value.trim()};
+ if(cid){const c=CX.clients.find(x=>x.id===cid),old=c.name;if(old!==name){CX.links.forEach(l=>{if(nk(l.client)===nk(old))l.client=name});CL.forEach(x=>{if(nk(x.client)===nk(old))x.client=name});saveCl()}Object.assign(c,rec)}
+ else{const ex=CX.clients.find(c=>nk(c.name)===nk(name));if(!ex)CX.clients.push({id:rid('k'),...rec})}
+ saveCx();toast('✔ 保存しました');closeModal()}
+/* --- Excel(.xlsx)出力：外部ライブラリ不要の最小実装 --- */
+const crcT=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})(),crc32=b=>{let c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=crcT[(c^b[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0};
+function zipStore(files){const te=new TextEncoder(),parts=[],cd=[],u16=v=>[v&255,v>>8&255],u32=v=>[v&255,v>>8&255,v>>16&255,v>>24&255];let off=0;
+ files.forEach(([name,data])=>{const nb=te.encode(name),d=typeof data==='string'?te.encode(data):data,crc=crc32(d),lh=[0x50,0x4b,3,4,...u16(20),...u16(0x0800),...u16(0),...u16(0),...u16(0x21),...u32(crc),...u32(d.length),...u32(d.length),...u16(nb.length),...u16(0)];
+  parts.push(new Uint8Array(lh),nb,d);cd.push([new Uint8Array([0x50,0x4b,1,2,...u16(20),...u16(20),...u16(0x0800),...u16(0),...u16(0),...u16(0x21),...u32(crc),...u32(d.length),...u32(d.length),...u16(nb.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(off)]),nb]);off+=lh.length+nb.length+d.length});
+ let cs=0;cd.forEach(([h,n])=>{parts.push(h,n);cs+=h.length+n.length});parts.push(new Uint8Array([0x50,0x4b,5,6,0,0,0,0,...u16(files.length),...u16(files.length),...u32(cs),...u32(off),0,0]));
+ const out=new Uint8Array(parts.reduce((t,p)=>t+p.length,0));let o=0;parts.forEach(p=>{out.set(p,o);o+=p.length});return out}
+const xe=s=>String(s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),colL=i=>{let s='';i++;while(i>0){const m=(i-1)%26;s=String.fromCharCode(65+m)+s;i=Math.floor((i-1)/26)}return s};
+function sheetXml(rows,widths){const cells=(r,ri)=>r.map((v,ci)=>{const ref=colL(ci)+(ri+1);if(ri===0)return `<c r="${ref}" s="1" t="inlineStr"><is><t>${xe(v)}</t></is></c>`;if(typeof v==='number'&&isFinite(v))return `<c r="${ref}" s="2"><v>${v}</v></c>`;if(v===''||v==null)return `<c r="${ref}"/>`;return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xe(v)}</t></is></c>`}).join('');
+ return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${widths.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')}</cols><sheetData>${rows.map((r,ri)=>`<row r="${ri+1}">${cells(r,ri)}</row>`).join('')}</sheetData><autoFilter ref="A1:${colL(widths.length-1)}${Math.max(rows.length,1)}"/></worksheet>`}
+function makeXlsx(sheets){const H='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',N='http://schemas.openxmlformats.org/',n=sheets.length;
+ return zipStore([['[Content_Types].xml',H+`<Types xmlns="${N}package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
+ ['_rels/.rels',H+`<Relationships xmlns="${N}package/2006/relationships"><Relationship Id="rId1" Type="${N}officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+ ['xl/workbook.xml',H+`<workbook xmlns="${N}spreadsheetml/2006/main" xmlns:r="${N}officeDocument/2006/relationships"><sheets>${sheets.map((s,i)=>`<sheet name="${xe(s[0])}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets></workbook>`],
+ ['xl/_rels/workbook.xml.rels',H+`<Relationships xmlns="${N}package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="${N}officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId${n+1}" Type="${N}officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+ ['xl/styles.xml',H+`<styleSheet xmlns="${N}spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF4F46E5"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`],
+ ...sheets.map((s,i)=>[`xl/worksheets/sheet${i+1}.xml`,sheetXml(s[1],s[2])])])}
+function clientTables(){const R1=[['イベント名','クライアント（会社）','詳細（チーム名・案件名）','詳細メモ','締め件数','最新の開催日','締め総額（円）']];linkRows().forEach(r=>R1.push([r.event,r.kind==='un'?'（未紐付け）':r.client,r.detail,r.memo,r.n,r.last?r.last.replace(/-/g,'/'):'',r.amt||0]));
+ const R2=[['会社名','連絡先・担当窓口','メモ','紐付けイベント数','紐付け内容（イベント：詳細）','締め件数','締め総額（円）']];clientRows().forEach(r=>R2.push([r.name,r.contact,r.memo,r.links.length,r.links.map(l=>l.event+(l.detail?'：'+l.detail:'')).join(' ／ '),r.n,r.amt||0]));return{R1,R2}}
+async function exportClientXlsx(){const{R1,R2}=clientTables();if(R1.length<2&&R2.length<2)return toast('出力するデータがありません');
+ const bytes=makeXlsx([['紐付け一覧',R1,[26,26,34,30,10,14,16]],['クライアント',R2,[26,26,30,14,60,10,16]]]);
+ await saveBlob(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),`クライアント紐付け_${todayIso.replace(/-/g,'')}.xlsx`)}
+async function exportClientCsv(){const{R1}=clientTables(),q=v=>/[",\r\n]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':String(v);
+ await saveBlob(new Blob(['\uFEFF'+R1.map(r=>r.map(q).join(',')).join('\r\n')+'\r\n'],{type:'text/csv'}),`クライアント紐付け_${todayIso.replace(/-/g,'')}.csv`)}
+
+/* ---------- 現場スケジュール × クライアント：補助・Excel出力 ---------- */
+const schedCols=ev=>{const out=[];M.forEach((m,mi)=>m.cols.forEach((c,ci)=>{if(!c.del&&nk(c.site)===nk(ev))out.push({mi,ci,c})}));return out};
+const clientsOfEvent=ev=>uniq(linksOf(ev).map(l=>l.client).concat(schedCols(ev).map(x=>x.c.client)));
+function schedInfo(ev,dates){const seen=new Map();schedCols(ev).forEach(({mi,ci,c})=>{if(dates&&dates.length&&!dates.includes(iso(dt(mi,ci))))return;if(!c.client&&!c.detail)return;seen.set((c.client||'')+'|'+(c.detail||''),{client:c.client||'',detail:c.detail||''})});return[...seen.values()]}
+const schedInfoHtml=c=>{const s=schedInfo(c.event,c.days.map(d=>d.date));return s.length?`<div class="box" style="margin:8px 0"><small class="mut">📋 シフト表の登録内容</small> ${s.map(x=>`<span class="pill st-can" style="margin-right:4px">🏢 ${esc(x.client||'（会社未設定）')}${x.detail?'・'+esc(x.detail):''}</span>`).join('')}</div>`:''};
+function propagateClient(mi,ci){const c=M[mi].cols[ci];if(!c.client&&!c.detail)return 0;let n=0;M[mi].cols.forEach((o,oi)=>{if(oi===ci||o.del||nk(o.site)!==nk(c.site))return;let ch=false;if(c.client&&!o.client){o.client=c.client;ch=true}if(c.detail&&!o.detail&&(!o.client||nk(o.client)===nk(c.client))){o.detail=c.detail;ch=true}if(ch){persistCol(mi,oi);n++}});return n}
+function suggestSched(){const site=($('#a_site').value||'').trim();if(!site)return;let info=null;const cs=schedCols(site).filter(x=>x.c.client).sort((a,b)=>M[b.mi].key.localeCompare(M[a.mi].key)||b.c.day-a.c.day);
+ if(cs.length)info={client:cs[0].c.client,detail:cs[0].c.detail||''};else{const ls=linksOf(site);if(ls.length===1)info={client:ls[0].client,detail:ls[0].detail||''}}
+ if(!info)return;const s=$('#a_client');if(s&&!s.value&&[...s.options].some(o=>o.value===info.client))s.value=info.client;if(info.detail&&!$('#a_detail').value)$('#a_detail').value=info.detail}
+function scheduleTable(mis){const R=[['年月','日付','曜日','イベント（現場）名','クライアント（会社）','詳細（チーム名・案件名）','開始時間','終了時間','請求書','支払','必要人員','決定数','不足','備考']];
+ mis.forEach(mi=>{const m=M[mi];m.cols.map((c,i)=>[c,i]).filter(([c])=>!c.del).sort((a,b)=>a[0].day-b[0].day||a[1]-b[1]).forEach(([c])=>R.push([m.label,m.key.replace('-','/')+'/'+c.day,c.wd,c.raw||c.site,c.client||'',c.detail||'',c.tStart||'',c.tEnd||'',c.invDone?'完了':'未',c.payDone?'完了':'未',c.need,c.dec,Math.max(0,c.need-c.dec),c.ev||'']))});return R}
+async function exportSchedule(scope){const mis=scope==='all'?MO():[st.mon],R=scheduleTable(mis);if(R.length<2)return toast('出力するスケジュールがありません');
+ const bytes=makeXlsx([['現場スケジュール',R,[10,14,6,26,26,30,10,10,10,10,10,8,8,20]]]),name=`現場スケジュール_${scope==='all'?'全期間':M[st.mon].key.replace('-','')}_${todayIso.replace(/-/g,'')}.xlsx`;
+ await saveBlob(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),name)}
+
+/* ---------- 案件ステータス（請求書完了・支払完了）／過去の項目の掃除 ---------- */
+const colDate=(mi,ci)=>iso(dt(mi,ci)),stBadge=(c,mi,ci)=>`<span class="bds"><i class="bd tg ${c.invDone?'ok':'ng'}" data-tg="inv|${mi}|${ci}" title="タップで切替">🧾${c.invDone?'請求済':'請求未'}</i><i class="bd tg ${c.payDone?'ok':'ng'}" data-tg="pay|${mi}|${ci}" title="タップで切替">💴${c.payDone?'支払済':'支払未'}</i></span>`,mfoot=(save,back)=>`<div class="mfoot"><button class="btn big" data-nav="back">${back||'← 戻る（キャンセル）'}</button>${save}</div>`;
+function syncStatus(){let n=0;CL.forEach(cl=>{const inv=!!cl.invoiced,s=payStat(cl),pay=s.n>0&&s.p===s.n;if(!inv&&!pay)return;cl.days.forEach(d=>schedCols(cl.event).forEach(({mi,ci,c})=>{if(colDate(mi,ci)!==d.date)return;let ch=false;if(inv&&!c.invDone){c.invDone=true;ch=true}if(pay&&!c.payDone){c.payDone=true;ch=true}if(ch){persistCol(mi,ci);n++}}))});return n}
+function purgeLegacy(){const LG=['planStart','planEnd','planBrk','actStart','actEnd','otMin','otReason'];let dirty=false;
+ [...Object.values(OV.colEdits||{}),...Object.values(OV.colAdds||{}).flat()].forEach(e=>{if(e)LG.forEach(k=>{if(e[k]!==undefined&&e[k]!==null){e[k]=null;dirty=true}})});
+ M.forEach(m=>m.cols.forEach(c=>LG.forEach(k=>{delete c[k]})));if(dirty)save()}
+
+/* ---------- イベント ---------- */
+const closeModal=()=>{$('#ov').hidden=true;curM=null;mStack=[];if(st.sm){st.sm=false;if(st.tab==='shift')rShift()}if(st.tab==='close')rClose();else if(st.tab==='client')rClient();else if(st.tab==='roster')updRoster();if(STORE.stale)STORE.apply()};
+const go=t=>{if(!goFlag&&st.tab&&st.tab!==t)tabH.push(st.tab);st.tab=t;document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));({roster:rRoster,shift:rShift,find:rFind,close:rShift,client:rClient})[t==='close'?'shift':t]()};
+on('click',e=>{const t=e.target,c=s=>t.closest(s);let x;
+if(c('.x')||t.id==='ov')return closeModal();
+if(x=c('[data-nav]'))return x.dataset.nav==='back'?navBack():x.dataset.nav==='done'?closeModal():navTop();
+if(x=c('nav button'))return go(x.dataset.tab);
+if(c('#newst'))return staffForm();
+if(c('.crow .chk'))return;
+if(x=c('[data-cf]')){st.cf=x.dataset.cf;return rClose()}
+if(x=c('[data-cv]')){st.cv=x.dataset.cv;return rClose()}
+if(x=c('[data-gk]')){const k=x.dataset.gk;st.cop.has(k)?st.cop.delete(k):st.cop.add(k);return updClose()}
+if(x=c('[data-gb]'))return groupBulk(x.dataset.gb);
+if(c('[data-unp]')){st.unp=!st.unp;st.lim=60;return rRoster()}
+if(c('[data-nsl]')){st.nsl=!st.nsl;st.lim=60;return rRoster()}
+if(c('#sadd_btn')){const sid=+c('#sdet').dataset.psid,cl=clById($('#sadd_sel').value);if(!cl)return toast('イベントを選んでください');cl.staff.push(newEntry(sid,cl.days.map(z=>z.date)));saveCl();st.sopen.add(cl.id);const sc=$('.mb').scrollTop;showStaff(sid);$('.mb').scrollTop=sc;return}
+if(c('#cnew'))return closingForm();
+if(c('#ksave'))return saveClosing();
+if(c('#ccsv'))return exportClosings();
+if(c('#cdet')){const cl=clById(c('#cdet').dataset.cid);let y;if(cl){
+ if(c('#ndadd')){const d=$('#nd_date').value;if(!d)return toast('日付を選んでください');if(cl.days.some(z=>z.date===d))return toast('その日はすでにあります');cl.days.push({date:d,note:$('#nd_note').value.trim()});cl.days.sort((a,b)=>a.date<b.date?-1:1);cl.staff.forEach(s=>s.days.push(d));saveCl();return showClose(cl.id)}
+ if(y=c('[data-ddel]')){const d=cl.days.splice(+y.dataset.ddel,1)[0];cl.staff.forEach(s=>s.days=s.days.filter(z=>z!==d.date));saveCl();return showClose(cl.id)}
+ if(y=c('[data-srm]')){cl.staff.splice(+y.dataset.srm,1);saveCl();return showClose(cl.id)}
+ if(y=c('[data-dc]')){y.classList.toggle('on');return}
+ if(c('#dcall')){document.querySelectorAll('#cdet [data-dc]').forEach(e=>e.classList.add('on'));return}
+ if(c('#dcadd')){const ds=[...document.querySelectorAll('#cdet [data-dc].on')].map(e=>e.dataset.dc);if(!ds.length)return toast('追加する日を選んでください');addDays(cl,ds,$('#dsync').checked);saveCl();return showClose(cl.id)}
+ if(c('#rgadd')){const a=$('#rg_a').value,b=$('#rg_b').value;if(!a||!b||a>b)return toast('期間（開始〜終了）を正しく選んでください');const ds=[];for(let d=new Date(a+'T00:00:00');iso(d)<=b&&ds.length<62;d.setDate(d.getDate()+1))ds.push(iso(d));addDays(cl,ds,$('#dsync').checked);saveCl();return showClose(cl.id)}
+ if(c('#resync')){addDays(cl,cl.days.map(z=>z.date),true,true);saveCl();return showClose(cl.id)}
+ if(y=c('[data-pm]')){st.pm=y.dataset.pm;return renderMat(cl)}
+ if(y=c('[data-ba]'))return bulkApply(y.dataset.ba,cl);
+ if(c('#cclose')){cl.closedAt=todayIso;cl.closedTotal=totAmt(cl);saveCl();return showClose(cl.id)}
+ if(c('#cunclose')){cl.closedAt='';cl.closedTotal=0;saveCl();return showClose(cl.id)}
+ if(y=c('[data-sadd]')){const sid=+y.dataset.sadd;if(!cl.staff.some(s=>s.sid===sid)){cl.staff.push(newEntry(sid,cl.days.map(z=>z.date)));saveCl()}return showClose(cl.id)}
+ if(y=c('#cdel')){if(!y.dataset.sure){y.dataset.sure=1;y.textContent='本当に削除する';return}CL.splice(CL.indexOf(cl),1);saveCl();closeModal();return toast('削除しました')}}}
+if(x=c('[data-cl]'))return showClose(x.dataset.cl);
+if(c('#csvb'))return csvForm();
+if(c('#bkout'))return backupOut();
+if(c('#bkgo'))return runRestore();
+if(c('#csvgo'))return runImport();
+if(c('#csvex'))return runExport();
+if(c('#mksync'))return doMarkSync();
+if(c('[data-ret]')){st.ret=!st.ret;st.lim=60;return rRoster()}
+if(x=c('#fsave'))return saveStaff(x.dataset.edit);
+if(x=c('#fdel'))return delStaff(x);
+if(x=c('[data-ed]'))return staffForm(+x.dataset.ed);
+if(c('#sched'))return schedForm();
+if(x=c('[data-addday]'))return schedForm(+x.dataset.addday);
+if(c('#addm'))return addMonth();
+if(c('#addc'))return addCol();
+if(x=c('[data-dc]'))return delCol(+x.dataset.dc);
+if(c('#reset'))return open('<h3>データの初期化</h3><p>このブラウザに保存した登録・編集内容（新規スタッフ、現場、シフトの状態）をすべて削除し、Excel取込時の状態に戻します。元に戻せません。</p><div class="acts"><button class="btn d" id="reset2">初期化する</button></div>');
+if(c('#reset2')){if(STORE.mode==='cloud'){toast('クラウド保存中は初期化できません（共有データが消えるため）');return}try{localStorage.removeItem(KEY);localStorage.removeItem(CKEY);localStorage.removeItem(CLKEY)}catch(e){}return location.reload()}
+if(x=c('[data-set]'))return doSet(x);
+if(x=c('[data-sid]'))return cycle(x);
+if(x=c('[data-pin]')){st.pin.add(+x.dataset.pin);$('#pq').value='';$('#pr').innerHTML='';return updShift()}
+if(c('[data-edit]')){st.edit=!st.edit;return rShift()}
+if(x=c('[data-sx]'))return exportSchedule(x.dataset.sx);
+if(x=c('[data-sch]')){st.mon=+x.dataset.sch;return schedForm()}
+if(x=c('[data-clv]')){st.clv=x.dataset.clv;return rClient()}
+if(c('#lnew'))return linkForm();
+if(c('#clnew'))return clientForm();
+if(x=c('[data-lk]'))return linkForm(x.dataset.lk);
+if(x=c('[data-cx]'))return clientForm(x.dataset.cx);
+if(x=c('[data-lnev]'))return linkForm(null,x.dataset.lnev);
+if(x=c('[data-lncl]'))return linkForm(null,'',x.dataset.lncl);
+if(x=c('#lksave'))return saveLink(x.dataset.lid);
+if(x=c('#lkdel')){if(!x.dataset.sure){x.dataset.sure=1;x.textContent='本当に削除する';return}CX.links=CX.links.filter(l=>l.id!==x.dataset.lid);saveCx();closeModal();return toast('削除しました')}
+if(x=c('#clsave'))return saveClient(x.dataset.cid);
+if(x=c('#cldel')){if(!x.dataset.sure){x.dataset.sure=1;x.textContent='本当に削除する（紐付けも削除）';return}const cl=CX.clients.find(z=>z.id===x.dataset.cid);if(cl){CX.links=CX.links.filter(l=>nk(l.client)!==nk(cl.name));CX.clients=CX.clients.filter(z=>z.id!==cl.id)}saveCx();closeModal();return toast('削除しました')}
+if(c('#xlsx'))return exportClientXlsx();
+if(c('#lcsv'))return exportClientCsv();
+if(x=c('[data-clf]')){const[a,b]=x.dataset.clf.split('|').map(Number);return openClosingFor(M[a].cols[b].site,a,[b])}
+if(x=c('[data-tg]')){const[f,a,b]=x.dataset.tg.split('|'),cc=M[+a].cols[+b];cc[f==='inv'?'invDone':'payDone']=!cc[f==='inv'?'invDone':'payDone'];persistCol(+a,+b);updShift();return toast('💾 '+(f==='inv'?'請求書':'支払')+'：'+(cc[f==='inv'?'invDone':'payDone']?'完了':'未完了')+'にしました')}
+if(x=c('[data-cm]')){st.cmode=x.dataset.cm;st.sel={mi:null,site:'',cols:new Set()};return rShift()}
+if(x=c('[data-sel]'))return selAction(x.dataset.sel);
+if(x=c('[data-c]'))return showCell(+x.dataset.m,+x.dataset.c);
+if(x=c('[data-id]'))return showStaff(+x.dataset.id);
+if(x=c('[data-g]')){st.grades.has(x.dataset.g)?st.grades.delete(x.dataset.g):st.grades.add(x.dataset.g);st.lim=60;return rRoster()}
+if(c('[data-act]')){st.act=!st.act;st.lim=60;return rRoster()}
+if(c('#more')){st.lim+=60;return updRoster()}
+if(x=c('[data-v]')){st.view=x.dataset.v;return rShift()}
+if(x=c('[data-site]')){st.rsite=st.rsite===x.dataset.site?'':x.dataset.site;st.rq='';$('#rq').value=st.rsite;return updFind()}
+if(x=c('[data-rg]')){st.rg.has(x.dataset.rg)?st.rg.delete(x.dataset.rg):st.rg.add(x.dataset.rg);x.classList.toggle('on');return updFind()}});
+on('input',e=>{const t=e.target;
+if(t.id==='q'){st.q=t.value;st.lim=60;updRoster()}
+else if(t.id==='cq'){st.cq=t.value;updClose()}
+else if(t.id==='lq'){st.lq=t.value;updClient()}
+else if(t.id==='cs'){const q=nz(t.value);$('#csr').innerHTML=q?R.filter(r=>r._k.includes(q)).slice(0,8).map(r=>`<button class="nm" data-sadd="${r.id}">＋ ${esc(r.name)} <small>#${r.id}</small></button>`).join('')||'<small class="mut">該当なし</small>':''}
+else if(t.id==='sq'){st.sq=t.value;updShift()}
+else if(t.id==='rq'){st.rq=t.value;st.rsite=SC[t.value]?t.value:'';updFind()}
+else if(t.id==='ps'){st.ps=t.value;$('#pres').innerHTML=psRes(+t.dataset.pm,+t.dataset.pc)}
+else if(t.id==='pq'){const q=nz(t.value);$('#pr').innerHTML=q?R.filter(r=>r._k.includes(q)).slice(0,8).map(r=>`<button class="nm" data-pin="${r.id}">${esc(r.name)} <small>#${r.id}</small></button>`).join('')||'<small class="mut">該当なし</small>':''}});
+on('change',e=>{const t=e.target;
+if(t.id==='csvf')return loadCsv(t.files[0]);
+if(t.id==='bkf')return loadBackup(t.files[0]);
+if(t.dataset&&t.dataset.combo&&t.value==='__new__'){t.nextElementSibling.hidden=false;t.nextElementSibling.focus();return}
+if(t.dataset&&t.dataset.inv){const cl=clById(t.dataset.inv);cl.invoiced=t.checked;cl.invoicedAt=t.checked?todayIso:'';saveCl();return updClose()}
+if(t.closest&&t.closest('#cdet'))return cdetChange(t);
+if(t.closest&&t.closest('#sdet'))return sdetChange(t);
+if(t.id==='k_event'||t.id==='k_event__n')return kEvent();
+if(t.id==='k_dsel'){if(t.value){$('#k_date').value=t.value;kDate()}return}
+if(t.id==='k_date')return kDate();
+if(t.id==='cev'){st.ce=t.value;return updClose()}
+if(t.id==='lcl'){st.lcl=t.value;return updClient()}
+if(t.id==='lev'){st.lev=t.value;return updClient()}
+if(t.id==='lun'){st.lun=t.checked;return updClient()}
+if(t.dataset&&t.dataset.sc){const[f,a,b]=t.dataset.sc.split('|'),c=M[+a].cols[+b];c[f==='inv'?'invDone':'payDone']=t.checked;persistCol(+a,+b);if(st.tab==='shift')updShift();return toast('💾 保存しました')}
+if(t.id==='sfil'){st.sfil=t.value;return updShift()}
+if(t.id==='a_site')return suggestSched();
+if(t.id==='cmo'){st.cm=t.value;return updClose()}
+if(t.id==='cmon'){st.cmon=t.value;return updClose()}
+if(t.id==='sx'){st.sex=t.value;updRoster()}
+else if(t.id==='mon'){st.mon=+t.value;st.site='';rShift()}
+else if(t.id==='ssel'){st.site=t.value;updShift()}
+else if(t.id==='so'){st.sort=t.value;updFind()}
+else if(t.id==='smon'){st.mon=+t.value;st.site='';schedForm();rShift()}
+else if(t.dataset.as){assign(+t.dataset.as,+t.dataset.am,+t.dataset.ac,t.value);showCell(+t.dataset.am,+t.dataset.ac);refresh();toast('💾 更新しました')}
+else if(t.dataset.ec!==undefined)editCol(t)});
+on('keydown',e=>{if(e.key==='Escape')closeModal()});
+if(STORE.needInit&&STORE.mode==='cloud'){R.forEach(r=>{OV.staff[r.id]={...pick(r),skills:r.skills||{},ng:r.ng||''}});STORE.needInit=false;save();saveCn();saveCl()}
+purgeLegacy();if(st.tab==='close')st.tab='shift';go(st.tab);window.__ready=true;if(!IS_PC){const b=$('#csvb');if(b)b.style.display='none'}STORE.show();}
+start();
+</script></body></html>
