@@ -391,7 +391,7 @@ function delSelRun(){const ids=[...(st.dsel||[])].filter(id=>byId.has(id));ids.f
 
 /* ---------- シフト表 ---------- */
 function rShift(){const m=M[st.mon],sites=[...new Set(m.cols.filter(c=>!c.del).map(c=>c.site).filter(Boolean))],mx=st.view==='mx';
-$('#main').innerHTML=`<div class="bar"><div class="chips"><select id="mon">${MO().map(i=>`<option value="${i}"${i===st.mon?' selected':''}>${M[i].label}</option>`).join('')}</select><select id="ssel"><option value="">現場：すべて</option>${sites.map(s=>`<option${s===st.site?' selected':''}>${esc(s)}</option>`).join('')}</select><div class="seg"><button data-v="cal" class="${st.view==='cal'?'on':''}">カレンダー</button><button data-v="ls" class="${st.view==='ls'?'on':''}">一覧</button><button data-v="mx" class="${mx?'on':''}">担当表</button></div><button class="btn" id="sched">⚙ 現場スケジュール編集</button><button class="btn" data-sx="month">📥 Excel</button><button class="btn" data-ics="month" title="この月の予定を、Googleカレンダー等に取り込めるファイル(.ics)で書き出す">📅 カレンダー書き出し</button>${st.view!=='mx'?`<select id="sfil" style="width:auto"><option value="">表示：すべて</option><option value="inv"${st.sfil==='inv'?' selected':''}>請求書 未チェックのみ</option><option value="pay"${st.sfil==='pay'?' selected':''}>支払 未チェックのみ</option></select>`:''}</div>${mx?`<div class="chips"><input id="sq" type="search" style="flex:1;min-width:180px" placeholder="🔍 担当表内をスタッフ名で絞り込み" value="${esc(st.sq)}"><button class="fc${st.edit?' on':''}" data-edit="1">✏️ 編集モード</button></div>`:''}${mx&&st.edit?`<div><input id="pq" type="search" placeholder="➕ 担当表に行を追加（スタッフ名・IDで検索）" autocomplete="off"><div id="pr" class="names" style="margin-top:6px"></div></div><p class="mut" style="margin:0">セルをクリックで切替：空 → 打診 → 〇 → 確定 → × → 空。列見出しをクリックすると、その現場の担当者をまとめて編集できます。</p>`:''}<div class="lg"><span class="pill st-ok">● 確定</span><span class="pill st-can">〇 可能</span><span class="pill st-ask">打 打診</span><span class="pill st-tri">△</span><span class="pill st-ng">× 不可</span><span class="pill st-bad">欠/断</span>${st.view==='cal'?'<span class="pill st-bad">赤＝人員不足</span><span class="pill st-ok">緑＝充足</span><span class="pill">☑ 請求・支払 チェック＝済（クリックで切替）</span>':''}</div></div><div id="res"></div>`;renderSel();updShift()}
+$('#main').innerHTML=`<div class="bar"><div class="chips"><select id="mon">${MO().map(i=>`<option value="${i}"${i===st.mon?' selected':''}>${M[i].label}</option>`).join('')}</select><select id="ssel"><option value="">現場：すべて</option>${sites.map(s=>`<option${s===st.site?' selected':''}>${esc(s)}</option>`).join('')}</select><div class="seg"><button data-v="cal" class="${st.view==='cal'?'on':''}">カレンダー</button><button data-v="ls" class="${st.view==='ls'?'on':''}">一覧</button><button data-v="mx" class="${mx?'on':''}">担当表</button></div><button class="btn" id="sched">⚙ 現場スケジュール編集</button><button class="btn" data-sx="month">📥 Excel</button><button class="btn s" data-hc="month||" title="確定スタッフを現場×日ごとに、配置依頼書・支払いリストの形式でExcel出力">📄 配置依頼書(Excel)</button><button class="btn" data-ics="month" title="この月の予定を、Googleカレンダー等に取り込めるファイル(.ics)で書き出す">📅 カレンダー書き出し</button>${st.view!=='mx'?`<select id="sfil" style="width:auto"><option value="">表示：すべて</option><option value="inv"${st.sfil==='inv'?' selected':''}>請求書 未チェックのみ</option><option value="pay"${st.sfil==='pay'?' selected':''}>支払 未チェックのみ</option></select>`:''}</div>${mx?`<div class="chips"><input id="sq" type="search" style="flex:1;min-width:180px" placeholder="🔍 担当表内をスタッフ名で絞り込み" value="${esc(st.sq)}"><button class="fc${st.edit?' on':''}" data-edit="1">✏️ 編集モード</button></div>`:''}${mx&&st.edit?`<div><input id="pq" type="search" placeholder="➕ 担当表に行を追加（スタッフ名・IDで検索）" autocomplete="off"><div id="pr" class="names" style="margin-top:6px"></div></div><p class="mut" style="margin:0">セルをクリックで切替：空 → 打診 → 〇 → 確定 → × → 空。列見出しをクリックすると、その現場の担当者をまとめて編集できます。</p>`:''}<div class="lg"><span class="pill st-ok">● 確定</span><span class="pill st-can">〇 可能</span><span class="pill st-ask">打 打診</span><span class="pill st-tri">△</span><span class="pill st-ng">× 不可</span><span class="pill st-bad">欠/断</span>${st.view==='cal'?'<span class="pill st-bad">赤＝人員不足</span><span class="pill st-ok">緑＝充足</span><span class="pill">☑ 請求・支払 チェック＝済（クリックで切替）</span>':''}</div></div><div id="res"></div>`;renderSel();updShift()}
 function updShift(){const s=$('.sc'),y=s&&s.scrollTop,x=s&&s.scrollLeft;$('#res').innerHTML=st.view==='cal'?cal():st.view==='ls'?lst():mat();const n=$('.sc');if(n&&s){n.scrollTop=y;n.scrollLeft=x}}
 function cal(){const m=M[st.mon],[y,mo]=m.key.split('-').map(Number),first=new Date(y,mo-1,1).getDay(),n=new Date(y,mo,0).getDate(),by={};
 m.cols.forEach((c,i)=>{if(!c.del&&(!st.site||c.site===st.site)&&(st.sfil!=='inv'||!c.invDone)&&(st.sfil!=='pay'||!c.payDone))(by[c.day]=by[c.day]||[]).push([c,i])});
@@ -438,7 +438,7 @@ return R.filter(r=>r._k.includes(q)).slice(0,8).map(r=>`<div class="ar"><span><b
 function showCell(mi,ci){track(showCell,[mi,ci],'現場の割り当て',0);const c=M[mi].cols[ci],g={};(cell.get(mi+'_'+ci)||[]).forEach(([id,v])=>{if(byId.has(id))(g[v]=g[v]||[]).push(id)});const sc=($('.mb')||{}).scrollTop||0;
 const row=(id,v)=>{const r=byId.get(id);return `<div class="ar"><button class="nm" data-id="${id}">${esc(r.name)} <small>${esc(r.grade||'')}</small></button><select data-as="${id}" data-am="${mi}" data-ac="${ci}" class="st-${STC[v]||'ng'}">${SOP.map(o=>`<option value="${o}"${o===v?' selected':''}>${o||'（クリア）'}</option>`).join('')}</select></div>`};
 const sec=['確定','〇','打診','△','当日欠','お断り'].filter(k=>g[k]).map(k=>`<h4><span class="pill st-${STC[k]}">${k}</span> ${g[k].length}名</h4>${g[k].map(id=>row(id,k)).join('')}`).join('');
-open(`<h3>${fd(mi,ci)} ${esc(c.raw||c.site)}</h3><p class="mut">必要 ${c.need}名 / 決定 ${c.dec}名 / 残 ${c.need-c.dec}名${c.ev?' · '+esc(c.ev):''}</p>${c.client||c.detail?`<p style="margin:0 0 6px">🏢 <b>${esc(c.client||'（クライアント未設定）')}</b>${c.detail?' ／ '+esc(c.detail):''}</p>`:''}<div class="chips" style="margin:0 0 8px"><label class="chk"><input type="checkbox" data-sc="inv|${mi}|${ci}"${c.invDone?' checked':''}> <b>請求書完了</b></label><label class="chk"><input type="checkbox" data-sc="pay|${mi}|${ci}"${c.payDone?' checked':''}> <b>支払完了</b></label></div><div class="acts" style="justify-content:flex-start;margin:0 0 6px">${gcalLink(mi,ci)}<button class="btn s" data-sch="${mi}|${ci}">✏ この現場のスケジュール・クライアントを編集</button></div><h4>➕ スタッフを追加・ステータス変更</h4><input id="ps" type="search" data-pm="${mi}" data-pc="${ci}" placeholder="名前・カナ・IDで検索" value="${esc(st.ps)}" autocomplete="off"><div id="pres" style="margin-top:6px">${psRes(mi,ci)}</div><h4 style="margin-top:18px">現在の登録状況</h4>${sec||'<p class="mut">まだ登録がありません</p>'}${g['×']?`<details style="margin-top:12px"><summary class="mut">× 不可 ${g['×'].length}名</summary>${g['×'].map(id=>row(id,'×')).join('')}</details>`:''}`);$('.mb').scrollTop=sc}
+open(`<h3>${fd(mi,ci)} ${esc(c.raw||c.site)}</h3><p class="mut">必要 ${c.need}名 / 決定 ${c.dec}名 / 残 ${c.need-c.dec}名${c.ev?' · '+esc(c.ev):''}</p>${c.client||c.detail?`<p style="margin:0 0 6px">🏢 <b>${esc(c.client||'（クライアント未設定）')}</b>${c.detail?' ／ '+esc(c.detail):''}</p>`:''}<div class="chips" style="margin:0 0 8px"><label class="chk"><input type="checkbox" data-sc="inv|${mi}|${ci}"${c.invDone?' checked':''}> <b>請求書完了</b></label><label class="chk"><input type="checkbox" data-sc="pay|${mi}|${ci}"${c.payDone?' checked':''}> <b>支払完了</b></label></div><div class="acts" style="justify-content:flex-start;margin:0 0 6px">${gcalLink(mi,ci)}<button class="btn s" data-sch="${mi}|${ci}">✏ この現場のスケジュール・クライアントを編集</button><button class="btn s" data-hc="cell|${mi}|${ci}">📄 配置依頼書(Excel)</button></div><h4>➕ スタッフを追加・ステータス変更</h4><input id="ps" type="search" data-pm="${mi}" data-pc="${ci}" placeholder="名前・カナ・IDで検索" value="${esc(st.ps)}" autocomplete="off"><div id="pres" style="margin-top:6px">${psRes(mi,ci)}</div><h4 style="margin-top:18px">現在の登録状況</h4>${sec||'<p class="mut">まだ登録がありません</p>'}${g['×']?`<details style="margin-top:12px"><summary class="mut">× 不可 ${g['×'].length}名</summary>${g['×'].map(id=>row(id,'×')).join('')}</details>`:''}`);$('.mb').scrollTop=sc}
 function staffForm(id){track(staffForm,[id],'スタッフ登録・編集',0);const e=id!=null?byId.get(id):null,nid=e?e.id:Math.max(0,...R.map(r=>r.id),...Object.keys(OV.deleted||{}).map(Number))+1,v=k=>esc(e?(e[k]??''):'');
 const gs=['','AA','A+','A','B','C'];
 open(`<h3>${e?'スタッフ情報を編集':'新規スタッフ登録'}</h3><div class="fg"><label class="fl">スタッフID／番号 *<input id="f_id" type="number" min="1" value="${nid}"${e?' readonly':''}></label><label class="fl">氏名（漢字）*<input id="f_name" type="text" value="${v('name')}" placeholder="例：山田 太郎"></label><label class="fl">氏名（カナ）<input id="f_kana" type="text" value="${v('kana')}" placeholder="例：ヤマダ タロウ"></label><label class="fl">年齢<input id="f_age" type="number" min="0" max="120" value="${e?age(e):''}"></label><label class="fl">性別<select id="f_sex"><option value="">—</option>${['男','女'].map(s=>`<option${e&&e.sex===s?' selected':''}>${s}</option>`).join('')}</select></label><label class="fl">評価<select id="f_grade">${gs.map(s=>`<option value="${s}"${e&&(e.grade||'').normalize('NFKC')===s?' selected':''}>${s||'—（未評価）'}</option>`).join('')}</select></label><label class="fl">最寄り駅<input id="f_station" type="text" value="${v('station')}"></label><label class="fl">生年月日<input id="f_birth" type="date" value="${v('birth')}"></label><label class="fl">電話番号<input id="f_tel" type="tel" value="${v('tel')}"></label><label class="fl">メールアドレス<input id="f_mail" type="email" value="${v('mail')}"></label><label class="fl">郵便番号<input id="f_zip" type="text" value="${v('zip')}" placeholder="例：151-0053"></label><label class="fl">スタッフ区分<select id="f_type">${['日払スタッフ','月払スタッフ','週払スタッフ','正社員','管理職社員'].map(s=>`<option${(e&&e.type?e.type:'日払スタッフ')===s?' selected':''}>${s}</option>`).join('')}</select></label><label class="fl" style="grid-column:1/-1">住所（都道府県から）<input id="f_addr" type="text" value="${v('addr')}" placeholder="例：東京都渋谷区代々木1-53-4"></label></div><p id="ferr" class="err"></p>${e?`<div class="acts" style="justify-content:flex-start;margin:6px 0 0"><button class="btn d" data-delst="${e.id}">🗑 このスタッフを削除</button></div>`:''}${mfoot(`<button class="btn p big" id="fsave" data-edit="${e?e.id:''}">✔ 確定する（保存）</button>`)}`)}
@@ -836,6 +836,113 @@ async function exportSchedule(scope){const mis=scope==='all'?MO():[st.mon],R=sch
  const bytes=makeXlsx([['現場スケジュール',R,[10,14,6,26,26,30,10,10,10,10,10,8,8,20]]]),name=`現場スケジュール_${scope==='all'?'全期間':M[st.mon].key.replace('-','')}_${todayIso.replace(/-/g,'')}.xlsx`;
  await saveBlob(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),name)}
 
+/* ---------- 配置依頼書・支払いリスト（Excel）：テンプレートと同じ項目・並び・数式で出力 ---------- */
+const HC={rate:1550,brk:60,mv:0,pay:'',tan:''};
+const hcColL=i=>{let s='';i++;while(i>0){const m=(i-1)%26;s=String.fromCharCode(65+m)+s;i=Math.floor((i-1)/26)}return s};
+const hcT=t=>{if(!t||!/^\d{1,2}:\d{2}$/.test(t))return '';const[h,m]=t.split(':').map(Number);return (h*60+m)/1440};
+function hcCalc(r,rate){const E=r.e,F=r.f,H=r.h||0,P=r.p||0,Q=0,bl=E===''||F==='',D=8/24,F2=bl?0:F+(F<E?1:0);
+ const G=bl?0:F2-E,I=bl?0:G-H,J=bl?0:Math.min(I,D),K=J===0?0:(J*24)*rate,L=bl?0:Math.max(0,Math.min(F2,22/24)-Math.max(E+H+D,9/24)),M=L===0?0:(L*24)*(rate*1.25),N=bl?0:Math.max(0,Math.min(F2,30/24)-Math.max(E+H+D,22/24)),O=N===0?0:(N*24)*(rate*1.5),R=bl?0:K+M+O+P+Q;
+ return{G,I,J,K,L,M,N,O,R}}
+function hcSheetXml(sh,S,xe){
+ const rate=sh.rate,n=Math.max(11,sh.rows.length),first=10,last=first+n-1,tot=last+2,cells={},rowsH={1:24,2:12},merges=['A1:F1','E2:F2','D3:F3','D4:F4','D5:F5','I5:M5','N5:R5','D6:F6','I6:M6','N6:R6','D7:F7','D8:F8','M8:N8'];
+ for(let r=3;r<=tot+1;r++)rowsH[r]=r<=last?18:20.1;
+ const put=(ref,o)=>{cells[ref]=o};
+ const MY='Meiryo UI',UD='UD デジタル 教科書体 N-B',W='FFFFFFFF',BK='FF000000';
+ const fnt=(name,sz,b,color)=>({name,sz,b:!!b,color:color||null});
+ const base=(over)=>Object.assign({f:fnt(MY,11),al:['','center']},over);
+ // タイトル行
+ put('A1',{v:'配　置　依　頼　書',s:S({f:fnt(MY,11,true,W),fill:BK,al:['center','center']})});
+ for(const c of 'BCDEF')put(c+'1',{s:S({f:fnt(MY,11,true,W),fill:BK,al:['center','center']})});
+ put('E2',{f:'TODAY()',v:Math.floor((Date.now()-new Date(1899,11,30).getTime()+(new Date().getTimezoneOffset()*-60000))/864e5),s:S(base({al:['center','center'],nf:'mm-dd-yy'}))});
+ const L=(ref,v,al)=>put(ref,{v,s:S(base({al:[al||'','center']}))});
+ [['B3',1],['B4',2],['B5',3],['B6',4],['B7',5],['B8',6]].forEach(([a,v])=>put(a,{v,s:S(base({al:['center','center']}))}));
+ [['C3','得　意　先'],['C4','現　場　名'],['C5','実施日'],['C6','給与支給日'],['C7','担当'],['C8','その他']].forEach(([a,v])=>L(a,v));
+ const uds=(b)=>S({f:fnt(UD,11,b),al:['left','center']});
+ put('D3',{v:sh.client||'',s:S(base({al:['left','center']}))});put('D4',{v:sh.site||'',s:S(base({al:['left','center']}))});
+ put('D5',{v:sh.dateText||'',s:uds(false)});put('D6',{v:sh.payDay||'',s:uds(true)});put('D7',{v:sh.tanto||'',s:S(base({al:['left','center']}))});
+ const ub={l:null,r:null,t:null,b:'medium'};
+ put('D8',{v:sh.other||'',s:S(base({b:ub}))});put('E8',{s:S(base({b:ub}))});put('F8',{s:S(base({b:ub}))});
+ put('M8',{v:'22:00-6:00まで',s:S(base({al:['center','center'],b:ub}))});put('N8',{s:S(base({b:ub}))});
+ // 単価
+ const lf=S(base({al:['left','center']}));
+ put('H3',{v:'基本',s:lf});put('I3',{v:rate,s:lf});put('J3',{v:'残業',s:lf});put('K3',{f:'I3*1.25',v:rate*1.25,s:S(base({al:['left','center'],nf:'0_ '}))});put('L3',{v:'深夜残業',s:lf});put('M3',{f:'I3*1.5',v:rate*1.5,s:lf});
+ put('H4',{v:'基本時間',s:lf});put('I4',{v:8/24,s:S(base({al:['left','center'],nf:'h:mm'}))});
+ // 見出し
+ const hd=(fill,b)=>S({f:fnt(MY,10,true,W),fill,al:['center','center',true],b});
+ const mm=(l,r)=>({l:l?'medium':null,r:r?'medium':null,t:'medium',b:null});
+ const heads=[['A','No.','FF1F4E78',1,1],['B','★ID','FF1F4E78',1,1],['C','★氏名','FF1F4E78',1,1],['D','★電話番号','FF1F4E78',1,1],['E','★出勤','FF1F4E78',1,1],['F','★退勤','FF1F4E78',1,1],['G','拘束','FF1F4E78',1,1],['H','★休憩','FF1F4E78',1,1],['I','実働','FF1F4E78',1,1],['J','通常時間','FF2F5597',1,1],['K','通常給','FF2F5597',1,0],['L','残業時間','FFC65911',1,0],['M','残業代','FFC65911',1,0],['N','深夜残時間','FFB2A100',1,0],['O','深夜残業代','FFB2A100',1,0],['P','★移動手当','FF1F4E78',1,0],['Q','★手当','FF1F4E78',1,0],['R','合計金額','FF1F4E78',1,1]];
+ heads.forEach(([c,t,fill,l,r])=>put(c+'9',{v:t,s:hd(fill,mm(l,r))}));
+ // 明細
+ const tb={l:'thin',r:'thin',t:'thin',b:'thin'},DG='FFD9D9D9',Y='FFFFFF00',GR='FFC5E0B3';
+ const cs=(o)=>S(Object.assign({f:fnt(MY,10),b:tb,bc:BK},o));
+ const sC=cs({al:['center','center']}),sID=cs({al:['center','center'],fill:GR}),sY=cs({al:['center','center'],fill:Y,nf:'hh:mm'}),sT=cs({al:['center','center'],nf:'hh:mm'}),sGN=cs({al:['right','center'],fill:DG,nf:'#,##0'}),sGT=cs({al:['center','center'],fill:DG,nf:'hh:mm'}),sN=cs({al:['right','center'],nf:'#,##0'});
+ let sum=0;
+ for(let k=0;k<n;k++){const r=first+k,d=sh.rows[k],has=!!d,c=has?hcCalc(d,rate):{G:0,I:0,J:0,K:0,L:0,M:0,N:0,O:0,R:0};if(has)sum+=c.R;
+  put('A'+r,{v:k+1,s:sC});put('B'+r,{v:has?d.id:undefined,s:sID});put('C'+r,{v:has?d.name:undefined,s:sC});put('D'+r,{v:has?d.tel:undefined,s:sC});
+  put('E'+r,{v:has&&d.e!==''?d.e:undefined,s:sY});put('F'+r,{v:has&&d.f!==''?d.f:undefined,s:sY});
+  put('G'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, F${r}+(F${r}<E${r})-E${r})`,v:c.G,s:sT});
+  put('H'+r,{v:has?(d.h||0):0,s:sY});
+  put('I'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, G${r}-H${r})`,v:c.I,s:sT});
+  put('J'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, MIN(I${r}, "08:00"*1))`,v:c.J,s:sT});
+  put('K'+r,{f:`IF(J${r}=0, 0, (J${r}*24)*$I$3)`,v:c.K,s:sGN});
+  put('L'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, MAX(0, MIN(F${r}+(F${r}<E${r}), "22:00"*1) - MAX(E${r}+H${r}+"08:00"*1, "09:00"*1)))`,v:c.L,s:sGT});
+  put('M'+r,{f:`IF(L${r}=0, 0, (L${r}*24)*$K$3)`,v:c.M,s:sGN});
+  put('N'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, MAX(0, MIN(F${r}+(F${r}<E${r}), "30:00"*1) - MAX(E${r}+H${r}+"08:00"*1, "22:00"*1)))`,v:c.N,s:sGT});
+  put('O'+r,{f:`IF(N${r}=0, 0, (N${r}*24)*$M$3)`,v:c.O,s:sGN});
+  put('P'+r,{v:has&&d.p?d.p:undefined,s:sGN});put('Q'+r,{s:sN});
+  put('R'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, SUM(K${r}, M${r}, O${r}, P${r}, Q${r}))`,v:c.R,s:sN});}
+ put('P'+tot,{v:'合計',s:S({f:fnt(MY,10,true),al:['right','center']})});
+ put('R'+tot,{f:`SUM(R${first}:R${last})`,v:sum,s:S({f:fnt(MY,11,true),al:['','' ],nf:'#,##0',b:{l:null,r:null,t:'thin',b:'double'},bc:BK})});
+ // XML
+ const refParts=ref=>{const m=/^([A-Z]+)(\d+)$/.exec(ref);let c=0;for(const ch of m[1])c=c*26+ch.charCodeAt(0)-64;return[c,+m[2]]};
+ const byRow={};Object.keys(cells).forEach(ref=>{const[c,r]=refParts(ref);(byRow[r]=byRow[r]||[]).push([c,ref,cells[ref]])});
+ const rowsX=[];for(let r=1;r<=tot+1;r++){const ht=rowsH[r]||20.1,cs2=(byRow[r]||[]).sort((a,b)=>a[0]-b[0]).map(([,ref,o])=>{const s=o.s;
+   if(o.f!==undefined)return `<c r="${ref}" s="${s}"><f>${xe(o.f)}</f><v>${o.v}</v></c>`;
+   if(o.v===undefined||o.v===''||o.v===null)return `<c r="${ref}" s="${s}"/>`;
+   if(typeof o.v==='number')return `<c r="${ref}" s="${s}"><v>${o.v}</v></c>`;
+   return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xe(o.v)}</t></is></c>`}).join('');
+  rowsX.push(`<row r="${r}" ht="${ht}" customHeight="1">${cs2}</row>`)}
+ const colsX='<cols><col min="1" max="18" width="13" customWidth="1"/><col min="19" max="19" width="3.6" customWidth="1"/></cols>';
+ return {xml:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:R${tot+1}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="20.1" customHeight="1"/>${colsX}<sheetData>${rowsX.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(m=>`<mergeCell ref="${m}"/>`).join('')}</mergeCells><printOptions horizontalCentered="1"/><pageMargins left="0.39" right="0.39" top="0.59" bottom="0.59" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/></worksheet>`,area:`$A$1:$S$${tot+1}`}}
+function makeHaichiXlsx(sheets){
+ const xe=s=>String(s??'').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+ const fonts=[],fills=[],borders=[],xfs=[],fi=new Map(),fli=new Map(),bi=new Map(),xi=new Map(),nfs={'General':0,'#,##0':3,'mm-dd-yy':14,'h:mm':20,'hh:mm':164,'0_ ':165};
+ const idx=(m,list,key,mk)=>{if(m.has(key))return m.get(key);list.push(mk());m.set(key,list.length-1);return list.length-1};
+ const fontX=f=>`<font>${f.b?'<b/>':''}<sz val="${f.sz}"/>${f.color?`<color rgb="${f.color}"/>`:''}<name val="${xe(f.name)}"/><family val="3"/></font>`;
+ fonts.push(fontX({name:'Yu Gothic',sz:11}));fills.push('<fill><patternFill patternType="none"/></fill>','<fill><patternFill patternType="gray125"/></fill>');fi.set('d',0);
+ borders.push('<border><left/><right/><top/><bottom/><diagonal/></border>');
+ xfs.push('<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>');
+ const S=o=>{const k=JSON.stringify(o);if(xi.has(k))return xi.get(k);
+  const fo=idx(fi,fonts,JSON.stringify(o.f||{}),()=>fontX(o.f||{name:'Yu Gothic',sz:11}));
+  const fl=o.fill?idx(fli,fills,o.fill,()=>`<fill><patternFill patternType="solid"><fgColor rgb="${o.fill}"/><bgColor indexed="64"/></patternFill></fill>`):0;
+  const b=o.b,bk=JSON.stringify([b,o.bc]),bd=b?idx(bi,borders,bk,()=>{const sd=(n,v)=>v?`<${n} style="${v}"><color rgb="${o.bc||'FF000000'}"/></${n}>`:`<${n}/>`;return `<border>${sd('left',b.l)}${sd('right',b.r)}${sd('top',b.t)}${sd('bottom',b.b)}<diagonal/></border>`}):0;
+  const nf=nfs[o.nf||'General'],al=o.al||[],alx=`<alignment${al[0]?` horizontal="${al[0]}"`:''}${al[1]?` vertical="${al[1]}"`:''}${al[2]?' wrapText="1"':''}/>`;
+  xfs.push(`<xf numFmtId="${nf}" fontId="${fo}" fillId="${fl}" borderId="${bd}" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">${alx}</xf>`);xi.set(k,xfs.length-1);return xfs.length-1};
+ const used=new Set(),parts=sheets.map(sh=>{let nm=String(sh.name||'シート').replace(/[\[\]:*?\/\\]/g,'・').slice(0,31),k=2,b=nm;while(used.has(nm)){const suf='('+k++ +')';nm=b.slice(0,31-suf.length)+suf}used.add(nm);return Object.assign({nm},hcSheetXml(sh,S,xe))});
+ const H='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',N='http://schemas.openxmlformats.org/',n=sheets.length;
+ const styles=H+`<styleSheet xmlns="${N}spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="hh:mm"/><numFmt numFmtId="165" formatCode="0_ "/></numFmts><fonts count="${fonts.length}">${fonts.join('')}</fonts><fills count="${fills.length}">${fills.join('')}</fills><borders count="${borders.length}">${borders.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+ return zipStore([['[Content_Types].xml',H+`<Types xmlns="${N}package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${parts.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
+ ['_rels/.rels',H+`<Relationships xmlns="${N}package/2006/relationships"><Relationship Id="rId1" Type="${N}officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+ ['xl/workbook.xml',H+`<workbook xmlns="${N}spreadsheetml/2006/main" xmlns:r="${N}officeDocument/2006/relationships"><sheets>${parts.map((p,i)=>`<sheet name="${xe(p.nm)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets><definedNames>${parts.map((p,i)=>`<definedName name="_xlnm.Print_Area" localSheetId="${i}">'${xe(p.nm.replace(/'/g,"''"))}'!${p.area}</definedName>`).join('')}</definedNames><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>`],
+ ['xl/_rels/workbook.xml.rels',H+`<Relationships xmlns="${N}package/2006/relationships">${parts.map((_,i)=>`<Relationship Id="rId${i+1}" Type="${N}officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId${n+1}" Type="${N}officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+ ['xl/styles.xml',styles],...parts.map((p,i)=>[`xl/worksheets/sheet${i+1}.xml`,p.xml])])}
+
+const HCK='staffapp.hc',hcLoad=()=>{try{return Object.assign({},HC,JSON.parse(localStorage.getItem(HCK)||'{}'))}catch(e){return{...HC}}};
+function hcEntries(scope,mi,ci){const L=[];if(scope==='cell')L.push([mi,ci]);else M[mi].cols.forEach((c,i)=>{if(c.del)return;if(st.site&&c.site!==st.site)return;L.push([mi,i])});
+ return L.map(([a,b])=>[a,b,(cell.get(a+'_'+b)||[]).filter(([id,v])=>v==='確定'&&byId.has(id)).map(x=>byId.get(x[0])).sort((p,q)=>p.id-q.id)]).filter(x=>x[2].length).sort((p,q)=>M[p[0]].cols[p[1]].day-M[q[0]].cols[q[1]].day)}
+function openHaichi(scope,mi,ci){const o=hcLoad(),L=hcEntries(scope,scope==='cell'?mi:st.mon,ci),mm=scope==='cell'?mi:st.mon;
+ open(`<h3>📄 配置依頼書・支払いリストをExcel出力</h3><p class="mut">${scope==='cell'?esc(fd(mi,ci)+' '+(M[mi].cols[ci].raw||M[mi].cols[ci].site)):esc(M[mm].label)+(st.site?'・'+esc(st.site):'・全現場')}　／　<b>${L.length}</b>現場日（「確定」のスタッフがいるものを、現場×日ごとに1シートで出力）</p>
+<div class="fg3"><label class="fl">基本時給（円）<input id="hc_rate" type="number" min="0" value="${esc(o.rate)}"></label><label class="fl">休憩の初期値（分）<input id="hc_brk" type="number" min="0" value="${esc(o.brk)}"></label><label class="fl">移動手当の初期値（円）<input id="hc_mv" type="number" min="0" value="${esc(o.mv||'')}" placeholder="空欄＝なし"></label><span></span></div>
+<div class="fg3"><label class="fl">給与支給日<input id="hc_pay" type="text" value="${esc(o.pay)}" placeholder="例：11月25日"></label><label class="fl">担当<input id="hc_tan" type="text" value="${esc(o.tan)}" placeholder="担当者名"></label><span></span><span></span></div>
+<p class="mut" style="font-size:12px">出勤・退勤は現場スケジュールの開始／終了時間が入ります（Excel上で個別に修正すると、拘束・実働・通常/残業/深夜・合計金額が自動計算されます）。電話番号はスタッフ情報から入ります。</p>`+mfoot(`<button class="btn p big" data-hcgo="${scope}|${mi??''}|${ci??''}" ${L.length?'':'disabled'}>📥 Excelをダウンロード</button>`,'← 戻る'))}
+async function exportHaichi(scope,mi,ci){const o={rate:Math.max(0,+$('#hc_rate').value||0)||HC.rate,brk:Math.max(0,+$('#hc_brk').value||0),mv:Math.max(0,+$('#hc_mv').value||0),pay:$('#hc_pay').value.trim(),tan:$('#hc_tan').value.trim()};
+ try{localStorage.setItem(HCK,JSON.stringify(o))}catch(e){}
+ const mm=scope==='cell'?mi:st.mon,L=hcEntries(scope,mm,ci);if(!L.length)return toast('「確定」のスタッフがいる現場がありません');
+ const sheets=L.map(([a,b,rs])=>{const c=M[a].cols[b],d=dt(a,b);return{name:`${c.site||c.raw||'現場'}_${d.getMonth()+1}月${d.getDate()}日`,rate:o.rate,client:c.client||'',site:c.raw||c.site||'',dateText:`${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日（${c.wd||''}）`,payDay:o.pay,tanto:o.tan,other:c.detail||'',
+  rows:rs.map(r=>({id:r.id,name:r.name,tel:r.tel||'',e:hcT(c.tStart),f:hcT(c.tEnd),h:o.brk/1440,p:o.mv}))}});
+ const bytes=makeHaichiXlsx(sheets);
+ await saveBlob(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),`配置依頼書_${scope==='cell'?(M[mi].cols[ci].site||'現場')+'_'+M[mi].key.replace('-','')+String(M[mi].cols[ci].day).padStart(2,'0'):M[mm].key.replace('-','')+(st.site?'_'+st.site:'')}_${todayIso.replace(/-/g,'')}.xlsx`);toast(`📄 ${sheets.length}シートを出力しました`)}
+
 /* ---------- 案件ステータス（請求書完了・支払完了）／過去の項目の掃除 ---------- */
 const colDate=(mi,ci)=>iso(dt(mi,ci)),cbx=(f,mi,ci,on,label)=>`<span class="ckb${on?' on':''}" data-tg="${f}|${mi}|${ci}" role="checkbox" aria-checked="${on?'true':'false'}" title="クリックで切替"><b class="bx">${on?'✔':''}</b>${label}</span>`,stBadge=(c,mi,ci)=>`<span class="bds">${cbx('inv',mi,ci,c.invDone,'請求')}${cbx('pay',mi,ci,c.payDone,'支払')}</span>`,mfoot=(save,back)=>`<div class="mfoot"><button class="btn big" data-nav="back">${back||'← 戻る（キャンセル）'}</button>${save}</div>`;
 function syncStatus(){let n=0;CL.forEach(cl=>{const inv=!!cl.invoiced,s=payStat(cl),pay=s.n>0&&s.p===s.n;if(!inv&&!pay)return;cl.days.forEach(d=>schedCols(cl.event).forEach(({mi,ci,c})=>{if(colDate(mi,ci)!==d.date)return;let ch=false;if(inv&&!c.invDone){c.invDone=true;ch=true}if(pay&&!c.payDone){c.payDone=true;ch=true}if(ch){persistCol(mi,ci);n++}}))});return n}
@@ -939,6 +1046,8 @@ if(x=c('[data-sid]'))return cycle(x);
 if(x=c('[data-pin]')){st.pin.add(+x.dataset.pin);$('#pq').value='';$('#pr').innerHTML='';return updShift()}
 if(c('[data-edit]')){st.edit=!st.edit;return rShift()}
 if(x=c('[data-ics]'))return exportIcs(x.dataset.ics);
+if(x=c('[data-hc]')){const[sc,a,b]=x.dataset.hc.split('|');return openHaichi(sc,+a,+b)}
+if(x=c('[data-hcgo]')){const[sc,a,b]=x.dataset.hcgo.split('|');return exportHaichi(sc,a===''?undefined:+a,b===''?undefined:+b)}
 if(x=c('[data-sx]'))return exportSchedule(x.dataset.sx);
 if(x=c('[data-sch]')){const[a,b]=x.dataset.sch.split('|').map(Number),cc=M[a]&&M[a].cols[b];st.mon=a;return schedForm(undefined,cc?{site:cc.site,ci:b,cd:cc.day,day:cc.day}:{})}
 if(x=c('[data-clv]')){st.clv=x.dataset.clv;return rClient()}
