@@ -167,7 +167,7 @@ input:focus,select:focus{border-color:var(--acc)}
 .seg button{border:0;background:var(--card);padding:7px 14px;cursor:pointer}.seg button.on{background:var(--acc);color:#fff}
 .lg{display:flex;gap:6px;flex-wrap:wrap;font-size:12px}
 .cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
-.wh{text-align:center;font-weight:700;color:var(--mut);padding:4px}.w0{color:#ef4444}.w6{color:#3b82f6}.hn{font-style:normal;font-size:10px;font-weight:600;color:#ef4444;margin-left:4px}.dn.w0{color:#ef4444}.dn.w6{color:#3b82f6}td.w0{color:#ef4444}td.w6{color:#3b82f6}
+.wh{text-align:center;font-weight:700;color:var(--mut);padding:4px}.w0{color:#ef4444}.w6{color:#3b82f6}#dbl{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:14px}#dbl[hidden]{display:none}.dblb{background:var(--card,#fff);color:var(--fg,#111);border:3px solid #ef4444;border-radius:14px;max-width:480px;width:100%;padding:16px;max-height:90vh;overflow:auto}.dblh{font-size:18px;font-weight:800;color:#ef4444;margin-bottom:6px}.dblr{background:rgba(239,68,68,.08);border-left:4px solid #94a3b8;padding:8px 10px;border-radius:8px;margin:8px 0;font-size:13px}.dblr.x{border-left-color:#ef4444}.dbla{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.dbla .btn{flex:1;min-width:150px}.hn{font-style:normal;font-size:10px;font-weight:600;color:#ef4444;margin-left:4px}.dn.w0{color:#ef4444}.dn.w6{color:#3b82f6}td.w0{color:#ef4444}td.w6{color:#3b82f6}
 .day{background:var(--card);border:1px solid var(--bd);border-radius:8px;min-height:84px;padding:4px;display:flex;flex-direction:column;gap:3px;min-width:0}
 .day.today{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
 .dn{font-weight:700;font-size:12px}.dn span{display:none;font-weight:400;color:var(--mut)}
@@ -540,11 +540,31 @@ function addMonth(){const k=$('#nm').value;if(!/^\d{4}-\d{2}$/.test(k))return to
 function delCol(i){const mi=st.mon,c=M[mi].cols[i];(cell.get(mi+'_'+i)||[]).map(a=>a[0]).forEach(id=>{setCode(id,mi,i,'');delete OV.cells[`${id}|${M[mi].key}|${i}`]});c.del=true;persistCol(mi,i);rebuild();schedForm();toast('削除しました')}
 function editCol(t){const mi=st.mon,i=+t.dataset.ec,c=M[mi].cols[i],f=t.dataset.f;let pn=0;
 if(f==='day'){c.day=+t.value;c.wd=wdOf(M[mi].key,c.day)}else if(f==='site'){const v=t.value.trim();if(!v){t.value=c.raw;return toast('現場名は空にできません')}c.raw=v;c.site=normSite(v)}
-else if(f==='ts'){c.tStart=t.value}else if(f==='te'){c.tEnd=t.value}else if(f==='inv'){c.invDone=t.checked}else if(f==='pay'){c.payDone=t.checked}else if(f==='client'||f==='detail'){c[f]=t.value.trim();linkFromCol(c);pn=propagateClient(mi,i)}else c.need=Math.max(0,+t.value||0);
+else if(f==='ts'){c.tStart=t.value;setTimeout(()=>dblAfterTimeEdit(mi,i),0)}else if(f==='te'){c.tEnd=t.value;setTimeout(()=>dblAfterTimeEdit(mi,i),0)}else if(f==='inv'){c.invDone=t.checked}else if(f==='pay'){c.payDone=t.checked}else if(f==='client'||f==='detail'){c[f]=t.value.trim();linkFromCol(c);pn=propagateClient(mi,i)}else c.need=Math.max(0,+t.value||0);
 persistCol(mi,i);rebuild();if(st.tab==='shift')updShift();if(pn){toast(`💾 保存しました（同じ現場の未設定の${pn}日にも反映）`);return schedForm()}toast('💾 保存しました')}
-function doSet(x){const id=+x.dataset.id,mi=+x.dataset.m,ci=+x.dataset.c;assign(id,mi,ci,x.dataset.set);showCell(mi,ci);refresh();toast(`${byId.get(id).name}：${x.dataset.set}`)}
-function cycle(x){const id=+x.dataset.sid,mi=+x.dataset.m,ci=+x.dataset.c,h=(hist.get(id)||[]).find(h=>h.mi===mi&&h.ci===ci),CY=['','打診','〇','確定','×'],i=CY.indexOf(h?h.code:'');st.pin.add(id);assign(id,mi,ci,i<0?'打診':CY[(i+1)%CY.length]);updShift()}
+function doSet(x){const id=+x.dataset.id,mi=+x.dataset.m,ci=+x.dataset.c;assignChk(id,mi,ci,x.dataset.set,()=>{showCell(mi,ci);refresh();toast(`${byId.get(id).name}：${x.dataset.set}`)})}
+function cycle(x){const id=+x.dataset.sid,mi=+x.dataset.m,ci=+x.dataset.c,h=(hist.get(id)||[]).find(h=>h.mi===mi&&h.ci===ci),CY=['','打診','〇','確定','×'],i=CY.indexOf(h?h.code:'');st.pin.add(id);assignChk(id,mi,ci,i<0?'打診':CY[(i+1)%CY.length],()=>updShift())}
 
+/* ---------- ダブルブッキング（時刻被り）検知 ---------- */
+const hmM=t=>{const[h,m]=String(t).split(':').map(Number);return h*60+m},
+ spanOf=(c,off)=>{if(!c.tStart||!c.tEnd)return null;const s=hmM(c.tStart),e=hmM(c.tEnd);return{s:s+off*1440,e:(e<=s?e+1440:e)+off*1440}};
+function dblConf(id,mi,ci){const c=M[mi].cols[ci],d0=dt(mi,ci).getTime(),res=[];
+ (hist.get(id)||[]).forEach(h=>{if(h.code!=='確定'||(h.mi===mi&&h.ci===ci))return;const o=M[h.mi].cols[h.ci];if(!o||o.del)return;const off=Math.round((dt(h.mi,h.ci).getTime()-d0)/864e5);if(Math.abs(off)>1)return;
+  const a=spanOf(c,0),b=spanOf(o,off);let kind;
+  if(a&&b){if(a.s<b.e&&b.s<a.e)kind='time';else return}else if(off===0)kind='maybe';else return;
+  res.push({mi:h.mi,ci:h.ci,o,kind})});return res}
+let DBL=null;
+function dblText(c){return (c.tStart||c.tEnd)?`${c.tStart||'?'}～${c.tEnd||'?'}`:'時間未設定'}
+function assignChk(id,mi,ci,code,after,cancel){const go=()=>{assign(id,mi,ci,code);after&&after()};
+ if(code!=='確定')return go();const cf=dblConf(id,mi,ci);if(!cf.length)return go();
+ DBL={go,cancel};const r=byId.get(id),c=M[mi].cols[ci];
+ const el=document.getElementById('dbl')||document.body.appendChild(Object.assign(document.createElement('div'),{id:'dbl'}));
+ el.innerHTML=`<div class="dblb" role="alertdialog" aria-modal="true"><div class="dblh">⚠️ 【警告】ダブルブッキングの可能性</div><p><b>${esc(r.name)}</b>さんは、同日のこの時間帯にすでに別の現場が入っています！</p>
+<div class="dblr">登録しようとしている現場<br><b>${fd(mi,ci)} ${esc(c.raw||c.site)}　${esc(dblText(c))}</b></div>
+${cf.map(x=>`<div class="dblr x">すでに「確定」の現場${x.kind==='maybe'?'（時間未設定のため、重複するか判断できません）':'（時間が重なっています）'}<br><b>${fd(x.mi,x.ci)} ${esc(x.o.raw||x.o.site)}　${esc(dblText(x.o))}</b></div>`).join('')}
+<p style="margin:10px 0 0"><b>本当に登録しますか？</b></p><div class="dbla"><button class="btn big" data-dblno="1">キャンセルして修正する</button><button class="btn d big" data-dblgo="1">このまま登録する</button></div></div>`;el.hidden=false}
+function dblClose(ok){const el=document.getElementById('dbl');if(el)el.hidden=true;const d=DBL;DBL=null;if(d){if(ok)d.go();else d.cancel&&d.cancel()}}
+function dblAfterTimeEdit(mi,ci){const w=[];(cell.get(mi+'_'+ci)||[]).forEach(([id,v])=>{if(v==='確定'&&byId.has(id)&&dblConf(id,mi,ci).some(x=>x.kind==='time'))w.push(byId.get(id).name)});if(w.length)toast('⚠ 時間の変更で重なりました：'+w.slice(0,4).join('、')+(w.length>4?' ほか':'')+'（同日に別の現場が入っています）')}
 /* ---------- CSV インポート／エクスポート ---------- */
 const nk=s=>String(s||'').normalize('NFKC').replace(/\s/g,'').toLowerCase();
 function parseCSV(s){const rows=[];let row=[],f='',q=false;for(let i=0;i<s.length;i++){const c=s[i];if(q){if(c==='"'){if(s[i+1]==='"'){f+='"';i++}else q=false}else f+=c}else if(c==='"'&&f==='')q=true;else if(c===','){row.push(f);f=''}else if(c==='\n'||c==='\r'){if(c==='\r'&&s[i+1]==='\n')i++;row.push(f);rows.push(row);row=[];f=''}else f+=c}if(f!==''||row.length){row.push(f);rows.push(row)}return rows}
@@ -1075,6 +1095,8 @@ if(x=c('[data-set]'))return doSet(x);
 if(x=c('[data-sid]'))return cycle(x);
 if(x=c('[data-pin]')){st.pin.add(+x.dataset.pin);$('#pq').value='';$('#pr').innerHTML='';return updShift()}
 if(c('[data-edit]')){st.edit=!st.edit;return rShift()}
+if(c('[data-dblgo]'))return dblClose(true);
+if(c('[data-dblno]'))return dblClose(false);
 if(x=c('[data-ics]'))return exportIcs(x.dataset.ics);
 if(x=c('[data-hc]')){const[sc,a,b]=x.dataset.hc.split('|');return openHaichi(sc,+a,+b)}
 if(x=c('[data-hcgo]')){const[sc,a,b]=x.dataset.hcgo.split('|');return exportHaichi(sc,a===''?undefined:+a,b===''?undefined:+b)}
@@ -1138,7 +1160,7 @@ else if(t.id==='mon'){st.mon=+t.value;st.site='';rShift()}
 else if(t.id==='ssel'){st.site=t.value;updShift()}
 else if(t.id==='so'){st.sort=t.value;updFind()}
 else if(t.id==='smon'){st.mon=+t.value;st.site='';schedForm(undefined,{});rShift()} else if(t.id==='cp_site'){cpList()} else if(t.id==='sfsite'){schedForm(undefined,{site:t.value})}
-else if(t.dataset.as){assign(+t.dataset.as,+t.dataset.am,+t.dataset.ac,t.value);showCell(+t.dataset.am,+t.dataset.ac);refresh();toast('💾 更新しました')}
+else if(t.dataset.as){const am=+t.dataset.am,ac=+t.dataset.ac;assignChk(+t.dataset.as,am,ac,t.value,()=>{showCell(am,ac);refresh();toast('💾 更新しました')},()=>showCell(am,ac))}
 else if(t.dataset.ec!==undefined)editCol(t)});
 on('keydown',e=>{if(e.key==='Escape')closeModal()});
 if(STORE.needInit&&STORE.mode==='cloud'){R.forEach(r=>{OV.staff[r.id]={...pick(r),skills:r.skills||{},ng:r.ng||''}});STORE.needInit=false;save();saveCn();saveCl()}
