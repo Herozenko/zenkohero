@@ -240,7 +240,7 @@ footer{max-width:1200px;margin:auto;padding:0 14px 24px;color:var(--mut);font-si
  .row{grid-template-columns:1fr auto}.dts{grid-column:1/-1}
 }
 </style></head><body>
-<header><div class="hw"><div class="hr"><h1>スタッフ管理<small id="sub"></small></h1><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end"><span id="sv" style="white-space:nowrap" class="mut" style="font-size:12px"></span><button class="btn" id="csvb">⇅ CSV</button><button class="btn p" id="newst">＋ スタッフ登録</button></div></div>
+<header><div class="hw"><div class="hr"><h1>スタッフ管理<small id="sub"></small></h1><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end"><span id="sv" style="white-space:nowrap" class="mut" style="font-size:12px"></span><button class="btn" id="csvb">⇅ CSV</button><button class="btn p" id="newst">＋ スタッフ登録</button><button class="btn" id="logoutb" title="ログアウト（この端末のアクセスキーを破棄して入力画面に戻る）">🔓 ログアウト</button></div></div>
 <div class="hnav"><button class="nb" data-nav="back" title="前の画面に戻る">← 戻る</button><button class="nb" data-nav="top" title="TOPへ">🏠 TOP</button><nav><button data-tab="roster" class="on">👥 スタッフ名簿</button><button data-tab="shift">📅 シフト表</button><button data-tab="find">🔎 業務で探す</button><button data-tab="client">🏢 クライアント</button></nav></div></div></header>
 <main id="main"><p class="mut" style="padding:14px">⏳ 読み込み中…（ずっとこの表示の場合は、ブラウザを最新版に更新するか、SafariやChromeで開き直してください）</p></main>
 <footer id="ft"></footer>
@@ -295,6 +295,11 @@ const STORE=(function(){const LSK='staffapp.key',LSCN='staffapp.cn',CH=100,chunk
    document['addEventListener']('visibilitychange',()=>{if(!document.hidden){S.idle=Date.now();check()}});setInterval(check,15000)},
   async applyRemote(){S.stale=false;await flush();const c=await api.loadCloud(false);STATE={OV:c.state.OV,CN:localCN(),CL:c.state.CL,CX:c.state.CX};boot(D0)}};
  return api})();
+async function doLogout(){try{await STORE.flushNow()}catch(e){}
+ try{STORE.forgetKey()}catch(e){}
+ try{sessionStorage.clear()}catch(e){}
+ try{document.cookie.split(';').forEach(c=>{const n=c.split('=')[0].trim();if(n)document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/'})}catch(e){}
+ location.replace(location.pathname)}
 function start(){const m=document.getElementById('main'),box=(t,x)=>{m.innerHTML=`<div class="box" style="max-width:440px;margin:30px auto"><b>${t}</b><p class="mut" style="margin:6px 0">${x}</p></div>`};
  const load=async()=>{m.innerHTML='<p class="mut" style="padding:14px">☁ データを読み込み中…</p>';
   try{const c=await STORE.loadCloud(true);D0=Object.assign({roster:[]},c.base||{});D0.roster=[];STATE={OV:c.state.OV,CN:STORE.localCN(),CL:c.state.CL,CX:c.state.CX};boot(D0);STORE.watch()}
@@ -1003,6 +1008,7 @@ if(c('#cdet')){const cl=clById(c('#cdet').dataset.cid);let y;if(cl){
  if(y=c('#cdel')){if(!y.dataset.sure){y.dataset.sure=1;y.textContent='本当に削除する';return}CL.splice(CL.indexOf(cl),1);saveCl();closeModal();return toast('削除しました')}}}
 if(x=c('[data-cl]'))return showClose(x.dataset.cl);
 if(c('#csvb'))return csvForm();
+if(c('#logoutb'))return doLogout();
 if(c('#bkout'))return backupOut();
 if(c('#bkgo'))return runRestore();
 if(c('#csvgo'))return runImport();
@@ -1112,6 +1118,6 @@ else if(t.dataset.as){assign(+t.dataset.as,+t.dataset.am,+t.dataset.ac,t.value);
 else if(t.dataset.ec!==undefined)editCol(t)});
 on('keydown',e=>{if(e.key==='Escape')closeModal()});
 if(STORE.needInit&&STORE.mode==='cloud'){R.forEach(r=>{OV.staff[r.id]={...pick(r),skills:r.skills||{},ng:r.ng||''}});STORE.needInit=false;save();saveCn();saveCl()}
-purgeLegacy();if(st.tab==='close')st.tab='shift';go(st.tab);window.__ready=true;if(!IS_PC){const b=$('#csvb');if(b)b.style.display='none'}STORE.show();}
+purgeLegacy();if(st.tab==='close')st.tab='shift';go(st.tab);window.__ready=true;if(!IS_PC){const b=$('#csvb');if(b)b.style.display='none'}STORE.show();if(window.APP_CONFIG&&window.APP_CONFIG.api==='local'){const b=$('#logoutb');if(b)b.style.display='none'}}
 start();
 </script></body></html>
