@@ -886,7 +886,7 @@ async function exportSchedule(scope){const mis=scope==='all'?MO():[st.mon],R=sch
  await saveBlob(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),name)}
 
 /* ---------- 配置依頼書・支払いリスト（Excel）：テンプレートと同じ項目・並び・数式で出力 ---------- */
-const HC={rate:1550,brk:60,mv:0,pay:'',tan:''};
+const HC={rate:1550,brk:60,mv:0,al:0,pay:'',tan:''};
 const hcColL=i=>{let s='';i++;while(i>0){const m=(i-1)%26;s=String.fromCharCode(65+m)+s;i=Math.floor((i-1)/26)}return s};
 const hcT=t=>{if(!t||!/^\d{1,2}:\d{2}$/.test(t))return '';const[h,m]=t.split(':').map(Number);return (h*60+m)/1440};
 function hcCalc(r,rate){const E=r.e,F=r.f,H=r.h||0,P=r.p||0,Q=0,bl=E===''||F==='',D=8/24,F2=bl?0:F+(F<E?1:0);
@@ -916,32 +916,38 @@ function hcSheetXml(sh,S,xe){
  const lf=S(base({al:['left','center']}));
  put('H3',{v:'基本',s:lf});put('I3',{v:rate,s:lf});put('J3',{v:'残業',s:lf});put('K3',{f:'I3*1.25',v:rate*1.25,s:S(base({al:['left','center'],nf:'0_ '}))});put('L3',{v:'深夜残業',s:lf});put('M3',{f:'I3*1.5',v:rate*1.5,s:lf});
  put('H4',{v:'基本時間',s:lf});put('I4',{v:8/24,s:S(base({al:['left','center'],nf:'h:mm'}))});
- // 見出し
+ // 列定義（まとめ出力のときは「日付」列を追加）。移動手当・手当・手当計の金額列を表示
+ const KEYS=['no'].concat(sh.bundle?['dt']:[],['id','name','tel','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s']),CL={};KEYS.forEach((k,x)=>CL[k]=hcColL(x));
  const hd=(fill,b)=>S({f:fnt(MY,10,true,W),fill,al:['center','center',true],b});
- const mm=(l,r)=>({l:l?'medium':null,r:r?'medium':null,t:'medium',b:null});
- const heads=[['A','No.','FF1F4E78',1,1],['B','★ID','FF1F4E78',1,1],['C','★氏名','FF1F4E78',1,1],['D','★電話番号','FF1F4E78',1,1],['E','★出勤','FF1F4E78',1,1],['F','★退勤','FF1F4E78',1,1],['G','拘束','FF1F4E78',1,1],['H','★休憩','FF1F4E78',1,1],['I','実働','FF1F4E78',1,1],['J','通常時間','FF2F5597',1,1],['K','通常給','FF2F5597',1,0],['L','残業時間','FFC65911',1,0],['M','残業代','FFC65911',1,0],['N','深夜残時間','FFB2A100',1,0],['O','深夜残業代','FFB2A100',1,0],['P','★移動手当','FF1F4E78',1,0],['Q','★手当','FF1F4E78',1,0],['R','合計金額','FF1F4E78',1,1]];
- heads.forEach(([c,t,fill,l,r])=>put(c+'9',{v:t,s:hd(fill,mm(l,r))}));
- // 明細
+ const NV='FF1F4E78',BL='FF2F5597',OR='FFC65911',YL='FFB2A100',GRN='FF548235';
+ const HEAD={no:['No.',NV],dt:['日付',NV],id:['★ID',NV],name:['★氏名',NV],tel:['★電話番号',NV],e:['★出勤',NV],f:['★退勤',NV],g:['拘束',NV],h:['★休憩',NV],i:['実働',NV],j:['通常時間',BL],k:['通常給',BL],l:['残業時間',OR],m:['残業代',OR],n:['深夜残時間',YL],o:['深夜残業代',YL],p:['★移動手当',GRN],q:['★手当',GRN],r:['手当計',GRN],s:['合計金額',NV]};
+ KEYS.forEach((k,x)=>put(CL[k]+'9',{v:HEAD[k][0],s:hd(HEAD[k][1],{l:x===0?'medium':null,r:x===KEYS.length-1?'medium':null,t:'medium',b:null})}));
  const tb={l:'thin',r:'thin',t:'thin',b:'thin'},DG='FFD9D9D9',Y='FFFFFF00',GR='FFC5E0B3';
  const cs=(o)=>S(Object.assign({f:fnt(MY,10),b:tb,bc:BK},o));
- const sC=cs({al:['center','center']}),sID=cs({al:['center','center'],fill:GR}),sY=cs({al:['center','center'],fill:Y,nf:'hh:mm'}),sT=cs({al:['center','center'],nf:'hh:mm'}),sGN=cs({al:['right','center'],fill:DG,nf:'#,##0'}),sGT=cs({al:['center','center'],fill:DG,nf:'hh:mm'}),sN=cs({al:['right','center'],nf:'#,##0'});
- let sum=0;
- for(let k=0;k<n;k++){const r=first+k,d=sh.rows[k],has=!!d,c=has?hcCalc(d,rate):{G:0,I:0,J:0,K:0,L:0,M:0,N:0,O:0,R:0};if(has)sum+=c.R;
-  put('A'+r,{v:k+1,s:sC});put('B'+r,{v:has?d.id:undefined,s:sID});put('C'+r,{v:has?d.name:undefined,s:sC});put('D'+r,{v:has?d.tel:undefined,s:sC});
-  put('E'+r,{v:has&&d.e!==''?d.e:undefined,s:sY});put('F'+r,{v:has&&d.f!==''?d.f:undefined,s:sY});
-  put('G'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, F${r}+(F${r}<E${r})-E${r})`,v:c.G,s:sT});
-  put('H'+r,{v:has?(d.h||0):0,s:sY});
-  put('I'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, G${r}-H${r})`,v:c.I,s:sT});
-  put('J'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, MIN(I${r}, "08:00"*1))`,v:c.J,s:sT});
-  put('K'+r,{f:`IF(J${r}=0, 0, (J${r}*24)*$I$3)`,v:c.K,s:sGN});
-  put('L'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, MAX(0, MIN(F${r}+(F${r}<E${r}), "22:00"*1) - MAX(E${r}+H${r}+"08:00"*1, "09:00"*1)))`,v:c.L,s:sGT});
-  put('M'+r,{f:`IF(L${r}=0, 0, (L${r}*24)*$K$3)`,v:c.M,s:sGN});
-  put('N'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, MAX(0, MIN(F${r}+(F${r}<E${r}), "30:00"*1) - MAX(E${r}+H${r}+"08:00"*1, "22:00"*1)))`,v:c.N,s:sGT});
-  put('O'+r,{f:`IF(N${r}=0, 0, (N${r}*24)*$M$3)`,v:c.O,s:sGN});
-  put('P'+r,{v:has&&d.p?d.p:undefined,s:sGN});put('Q'+r,{s:sN});
-  put('R'+r,{f:`IF(OR(E${r}="",F${r}=""), 0, SUM(K${r}, M${r}, O${r}, P${r}, Q${r}))`,v:c.R,s:sN});}
- put('P'+tot,{v:'合計',s:S({f:fnt(MY,10,true),al:['right','center']})});
- put('R'+tot,{f:`SUM(R${first}:R${last})`,v:sum,s:S({f:fnt(MY,11,true),al:['','' ],nf:'#,##0',b:{l:null,r:null,t:'thin',b:'double'},bc:BK})});
+ const sC=cs({al:['center','center']}),sID=cs({al:['center','center'],fill:GR}),sY=cs({al:['center','center'],fill:Y,nf:'hh:mm'}),sT=cs({al:['center','center'],nf:'hh:mm'}),sGN=cs({al:['right','center'],fill:DG,nf:'#,##0'}),sGT=cs({al:['center','center'],fill:DG,nf:'hh:mm'}),sN=cs({al:['right','center'],nf:'#,##0'}),sYN=cs({al:['right','center'],fill:Y,nf:'#,##0'});
+ const sums={k:0,m:0,o:0,p:0,q:0,r:0,s:0};
+ for(let k=0;k<n;k++){const r=first+k,d=sh.rows[k],has=!!d,c=has?hcCalc(d,rate):{G:0,I:0,J:0,K:0,L:0,M:0,N:0,O:0,R:0},Q=has?(d.q||0):0,PQ=(has?(d.p||0):0)+Q,ok=has&&d.e!==''&&d.f!=='';
+  if(has){sums.k+=c.K;sums.m+=c.M;sums.o+=c.O;sums.p+=d.p||0;sums.q+=Q;sums.r+=PQ;if(ok)sums.s+=c.K+c.M+c.O+PQ}
+  const X=key=>CL[key]+r,e=X('e'),f=X('f'),h=X('h'),g=X('g'),i=X('i'),j=X('j'),kk=X('k'),l=X('l'),m=X('m'),nn=X('n'),o=X('o'),p=X('p'),q=X('q'),rr=X('r');
+  put(X('no'),{v:k+1,s:sC});if(sh.bundle)put(X('dt'),{v:has?d.dt:undefined,s:sC});
+  put(X('id'),{v:has?d.id:undefined,s:sID});put(X('name'),{v:has?d.name:undefined,s:sC});put(X('tel'),{v:has?d.tel:undefined,s:sC});
+  put(e,{v:has&&d.e!==''?d.e:undefined,s:sY});put(f,{v:has&&d.f!==''?d.f:undefined,s:sY});
+  const blank=`OR(${e}="",${f}="")`;
+  put(g,{f:`IF(${blank}, 0, ${f}+(${f}<${e})-${e})`,v:c.G,s:sT});
+  put(h,{v:has?(d.h||0):0,s:sY});
+  put(i,{f:`IF(${blank}, 0, ${g}-${h})`,v:c.I,s:sT});
+  put(j,{f:`IF(${blank}, 0, MIN(${i}, "08:00"*1))`,v:c.J,s:sT});
+  put(kk,{f:`IF(${j}=0, 0, (${j}*24)*$I$3)`,v:c.K,s:sGN});
+  put(l,{f:`IF(${blank}, 0, MAX(0, MIN(${f}+(${f}<${e}), "22:00"*1) - MAX(${e}+${h}+"08:00"*1, "09:00"*1)))`,v:c.L,s:sGT});
+  put(m,{f:`IF(${l}=0, 0, (${l}*24)*$K$3)`,v:c.M,s:sGN});
+  put(nn,{f:`IF(${blank}, 0, MAX(0, MIN(${f}+(${f}<${e}), "30:00"*1) - MAX(${e}+${h}+"08:00"*1, "22:00"*1)))`,v:c.N,s:sGT});
+  put(o,{f:`IF(${nn}=0, 0, (${nn}*24)*$M$3)`,v:c.O,s:sGN});
+  put(p,{v:has&&d.p?d.p:undefined,s:sYN});put(q,{v:has&&Q?Q:undefined,s:sYN});
+  put(rr,{f:`SUM(${p}, ${q})`,v:PQ,s:sGN});
+  put(X('s'),{f:`IF(${blank}, 0, SUM(${kk}, ${m}, ${o}, ${rr}))`,v:ok?c.K+c.M+c.O+PQ:0,s:sN});}
+ const lab=S({f:fnt(MY,10,true),al:['right','center']}),tot2=S({f:fnt(MY,11,true),al:['right','center'],nf:'#,##0',b:{l:null,r:null,t:'thin',b:'double'},bc:BK});
+ put(CL.i+tot,{v:'合計',s:lab});
+ ['k','m','o','p','q','r','s'].forEach(key=>put(CL[key]+tot,{f:`SUM(${CL[key]}${first}:${CL[key]}${last})`,v:sums[key],s:tot2}));
  // XML
  const refParts=ref=>{const m=/^([A-Z]+)(\d+)$/.exec(ref);let c=0;for(const ch of m[1])c=c*26+ch.charCodeAt(0)-64;return[c,+m[2]]};
  const byRow={};Object.keys(cells).forEach(ref=>{const[c,r]=refParts(ref);(byRow[r]=byRow[r]||[]).push([c,ref,cells[ref]])});
@@ -951,8 +957,8 @@ function hcSheetXml(sh,S,xe){
    if(typeof o.v==='number')return `<c r="${ref}" s="${s}"><v>${o.v}</v></c>`;
    return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xe(o.v)}</t></is></c>`}).join('');
   rowsX.push(`<row r="${r}" ht="${ht}" customHeight="1">${cs2}</row>`)}
- const colsX='<cols><col min="1" max="18" width="13" customWidth="1"/><col min="19" max="19" width="3.6" customWidth="1"/></cols>';
- return {xml:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:R${tot+1}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="20.1" customHeight="1"/>${colsX}<sheetData>${rowsX.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(m=>`<mergeCell ref="${m}"/>`).join('')}</mergeCells><printOptions horizontalCentered="1"/><pageMargins left="0.39" right="0.39" top="0.59" bottom="0.59" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/></worksheet>`,area:`$A$1:$S$${tot+1}`}}
+ const NC=KEYS.length,colsX=`<cols><col min="1" max="${NC}" width="13" customWidth="1"/><col min="${NC+1}" max="${NC+1}" width="3.6" customWidth="1"/></cols>`;
+ return {xml:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:${hcColL(NC-1)}${tot+1}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="20.1" customHeight="1"/>${colsX}<sheetData>${rowsX.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(m=>`<mergeCell ref="${m}"/>`).join('')}</mergeCells><printOptions horizontalCentered="1"/><pageMargins left="0.39" right="0.39" top="0.59" bottom="0.59" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/></worksheet>`,area:`$A$1:$${hcColL(NC)}$${tot+1}`}}
 function makeHaichiXlsx(sheets){
  const xe=s=>String(s??'').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
  const fonts=[],fills=[],borders=[],xfs=[],fi=new Map(),fli=new Map(),bi=new Map(),xi=new Map(),nfs={'General':0,'#,##0':3,'mm-dd-yy':14,'h:mm':20,'hh:mm':164,'0_ ':165};
@@ -977,20 +983,30 @@ function makeHaichiXlsx(sheets){
  ['xl/styles.xml',styles],...parts.map((p,i)=>[`xl/worksheets/sheet${i+1}.xml`,p.xml])])}
 
 const HCK='staffapp.hc',hcLoad=()=>{try{return Object.assign({},HC,JSON.parse(localStorage.getItem(HCK)||'{}'))}catch(e){return{...HC}}};
-function hcEntries(scope,mi,ci){const L=[];if(scope==='cell')L.push([mi,ci]);else M[mi].cols.forEach((c,i)=>{if(c.del)return;if(st.site&&c.site!==st.site)return;L.push([mi,i])});
- return L.map(([a,b])=>[a,b,(cell.get(a+'_'+b)||[]).filter(([id,v])=>v==='確定'&&byId.has(id)).map(x=>byId.get(x[0])).sort((p,q)=>p.id-q.id)]).filter(x=>x[2].length).sort((p,q)=>M[p[0]].cols[p[1]].day-M[q[0]].cols[q[1]].day)}
-function openHaichi(scope,mi,ci){const o=hcLoad(),L=hcEntries(scope,scope==='cell'?mi:st.mon,ci),mm=scope==='cell'?mi:st.mon;
- open(`<h3>📄 配置依頼書・支払いリストをExcel出力</h3><p class="mut">${scope==='cell'?esc(fd(mi,ci)+' '+(M[mi].cols[ci].raw||M[mi].cols[ci].site)):esc(M[mm].label)+(st.site?'・'+esc(st.site):'・全現場')}　／　<b>${L.length}</b>現場日（「確定」のスタッフがいるものを、現場×日ごとに1シートで出力）</p>
-<div class="fg3"><label class="fl">基本時給（円）<input id="hc_rate" type="number" min="0" value="${esc(o.rate)}"></label><label class="fl">休憩の初期値（分）<input id="hc_brk" type="number" min="0" value="${esc(o.brk)}"></label><label class="fl">移動手当の初期値（円）<input id="hc_mv" type="number" min="0" value="${esc(o.mv||'')}" placeholder="空欄＝なし"></label><span></span></div>
+/* 確定スタッフのいる現場日を集める。scope='cell'：その1件　'month'：表示月（現場フィルタ対応）　site指定：その現場の月内すべて */
+function hcEntries(scope,mi,ci,site){const L=[];if(scope==='cell'&&!site)L.push([mi,ci]);else M[mi].cols.forEach((c,i)=>{if(c.del)return;if(site?c.site!==site:(st.site&&c.site!==st.site))return;L.push([mi,i])});
+ return L.map(([a,b])=>[a,b,(cell.get(a+'_'+b)||[]).filter(([id,v])=>v==='確定'&&byId.has(id)).map(x=>byId.get(x[0])).sort((p,q)=>p.id-q.id)]).filter(x=>x[2].length).sort((p,q)=>M[p[0]].cols[p[1]].day-M[q[0]].cols[q[1]].day||p[1]-q[1])}
+function openHaichi(scope,mi,ci){const o=hcLoad(),mm=scope==='cell'?mi:st.mon,c0=scope==='cell'?M[mi].cols[ci]:null,L=hcEntries(scope,mm,ci),n2=c0?hcEntries('month',mm,ci,c0.site).length:0;
+ open(`<h3>📄 配置依頼書・支払いリストをExcel出力</h3><p class="mut">${scope==='cell'?esc(fd(mi,ci)+' '+(c0.raw||c0.site)):esc(M[mm].label)+(st.site?'・'+esc(st.site):'・全現場')}　／　<b>${L.length}</b>現場日（「確定」のスタッフがいるもの）</p>
+<div class="chk" style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin:6px 0 10px"><label class="chk"><input type="radio" name="hc_mode" value="day" checked> <b>現場×日ごとに1シート</b>（1日1枚の配置依頼書）</label>
+<label class="chk"><input type="radio" name="hc_mode" value="bundle"> <b>現場ごとにまとめて1シート</b>（家政大学など、日々ある案件を${scope==='cell'?'「'+esc(c0.site||c0.raw)+'」の月内（'+n2+'日分）':'月内すべて'}まとめて1つに。日付の列が付きます）</label></div>
+<div class="fg3"><label class="fl">基本時給（円）<input id="hc_rate" type="number" min="0" value="${esc(o.rate)}"></label><label class="fl">休憩の初期値（分）<input id="hc_brk" type="number" min="0" value="${esc(o.brk)}"></label><label class="fl">移動手当の初期値（円/人・日）<input id="hc_mv" type="number" min="0" value="${esc(o.mv||'')}" placeholder="空欄＝なし"></label><label class="fl">手当の初期値（円/人・日）<input id="hc_al" type="number" min="0" value="${esc(o.al||'')}" placeholder="空欄＝なし"></label></div>
 <div class="fg3"><label class="fl">給与支給日<input id="hc_pay" type="text" value="${esc(o.pay)}" placeholder="例：11月25日"></label><label class="fl">担当<input id="hc_tan" type="text" value="${esc(o.tan)}" placeholder="担当者名"></label><span></span><span></span></div>
-<p class="mut" style="font-size:12px">出勤・退勤は現場スケジュールの開始／終了時間が入ります（Excel上で個別に修正すると、拘束・実働・通常/残業/深夜・合計金額が自動計算されます）。電話番号はスタッフ情報から入ります。</p>`+mfoot(`<button class="btn p big" data-hcgo="${scope}|${mi??''}|${ci??''}" ${L.length?'':'disabled'}>📥 Excelをダウンロード</button>`,'← 戻る'))}
-async function exportHaichi(scope,mi,ci){const o={rate:Math.max(0,+$('#hc_rate').value||0)||HC.rate,brk:Math.max(0,+$('#hc_brk').value||0),mv:Math.max(0,+$('#hc_mv').value||0),pay:$('#hc_pay').value.trim(),tan:$('#hc_tan').value.trim()};
+<p class="mut" style="font-size:12px">出勤・退勤は現場スケジュールの開始／終了時間が入ります。移動手当・手当は金額の列に表示され、「手当計」と「合計金額」に自動で加算されます（Excel上で人ごとに修正でき、再計算されます）。電話番号はスタッフ情報から入ります。</p>`+mfoot(`<button class="btn p big" data-hcgo="${scope}|${mi??''}|${ci??''}">📥 Excelをダウンロード</button>`,'← 戻る'))}
+async function exportHaichi(scope,mi,ci){const bundle=(document.querySelector('input[name=hc_mode]:checked')||{}).value==='bundle',
+ o={rate:Math.max(0,+$('#hc_rate').value||0)||HC.rate,brk:Math.max(0,+$('#hc_brk').value||0),mv:Math.max(0,+$('#hc_mv').value||0),al:Math.max(0,+$('#hc_al').value||0),pay:$('#hc_pay').value.trim(),tan:$('#hc_tan').value.trim()};
  try{localStorage.setItem(HCK,JSON.stringify(o))}catch(e){}
- const mm=scope==='cell'?mi:st.mon,L=hcEntries(scope,mm,ci);if(!L.length)return toast('「確定」のスタッフがいる現場がありません');
- const sheets=L.map(([a,b,rs])=>{const c=M[a].cols[b],d=dt(a,b);return{name:`${c.site||c.raw||'現場'}_${d.getMonth()+1}月${d.getDate()}日`,rate:o.rate,client:c.client||'',site:c.raw||c.site||'',dateText:`${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日（${c.wd||''}）`,payDay:o.pay,tanto:o.tan,other:c.detail||'',
-  rows:rs.map(r=>({id:r.id,name:r.name,tel:r.tel||'',e:hcT(c.tStart),f:hcT(c.tEnd),h:o.brk/1440,p:o.mv}))}});
+ const mm=scope==='cell'?mi:st.mon,c0=scope==='cell'?M[mi].cols[ci]:null,L=hcEntries(bundle&&c0?'month':scope,mm,ci,bundle&&c0?c0.site:undefined);if(!L.length)return toast('「確定」のスタッフがいる現場がありません');
+ const mk=(c,rs,d,dt)=>rs.map(r=>({id:r.id,name:r.name,tel:r.tel||'',e:hcT(c.tStart),f:hcT(c.tEnd),h:o.brk/1440,p:o.mv,q:o.al,dt}));
+ const dtx=(a,b)=>{const c=M[a].cols[b];return `${M[a].key.split('-')[1]*1}/${c.day}（${c.wd||''}）`};
+ let sheets;
+ if(!bundle)sheets=L.map(([a,b,rs])=>{const c=M[a].cols[b],d=dt(a,b);return{name:`${c.site||c.raw||'現場'}_${d.getMonth()+1}月${d.getDate()}日`,rate:o.rate,client:c.client||'',site:c.raw||c.site||'',dateText:`${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日（${c.wd||''}）`,payDay:o.pay,tanto:o.tan,other:c.detail||'',rows:mk(c,rs)}});
+ else{const g=new Map();L.forEach(x=>{const k=M[x[0]].cols[x[1]].site||'';(g.get(k)||g.set(k,[]).get(k)).push(x)});
+  sheets=[...g.entries()].map(([site,xs])=>{const cs=xs.map(([a,b])=>M[a].cols[b]),uniq=f=>[...new Set(cs.map(f).filter(Boolean))],days=new Set(xs.map(([a,b])=>a+'_'+M[a].cols[b].day)).size,d1=dt(xs[0][0],xs[0][1]),dl=dt(xs[xs.length-1][0],xs[xs.length-1][1]);
+   return{bundle:true,name:`${site||'現場'}_${M[mm].key.replace('-','')}まとめ`,rate:o.rate,client:uniq(c=>c.client).join('・'),site:site,dateText:`${d1.getFullYear()}年${d1.getMonth()+1}月${d1.getDate()}日～${dl.getMonth()+1}月${dl.getDate()}日（${days}日分）`,payDay:o.pay,tanto:o.tan,other:uniq(c=>c.detail).join('・'),
+    rows:xs.flatMap(([a,b,rs])=>mk(M[a].cols[b],rs,0,dtx(a,b)))}})}
  const bytes=makeHaichiXlsx(sheets);
- await saveBlob(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),`配置依頼書_${scope==='cell'?(M[mi].cols[ci].site||'現場')+'_'+M[mi].key.replace('-','')+String(M[mi].cols[ci].day).padStart(2,'0'):M[mm].key.replace('-','')+(st.site?'_'+st.site:'')}_${todayIso.replace(/-/g,'')}.xlsx`);toast(`📄 ${sheets.length}シートを出力しました`)}
+ await saveBlob(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),`配置依頼書${bundle?'まとめ':''}_${scope==='cell'?(M[mi].cols[ci].site||'現場')+'_'+M[mi].key.replace('-',''):M[mm].key.replace('-','')+(st.site?'_'+st.site:'')}_${todayIso.replace(/-/g,'')}.xlsx`);toast(`📄 ${sheets.length}シートを出力しました`)}
 
 /* ---------- 案件ステータス（請求書完了・支払完了）／過去の項目の掃除 ---------- */
 const colDate=(mi,ci)=>iso(dt(mi,ci)),cbx=(f,mi,ci,on,label)=>`<span class="ckb${on?' on':''}" data-tg="${f}|${mi}|${ci}" role="checkbox" aria-checked="${on?'true':'false'}" title="クリックで切替"><b class="bx">${on?'✔':''}</b>${label}</span>`,stBadge=(c,mi,ci)=>`<span class="bds">${cbx('inv',mi,ci,c.invDone,'請求')}${cbx('pay',mi,ci,c.payDone,'支払')}</span>`,mfoot=(save,back)=>`<div class="mfoot"><button class="btn big" data-nav="back">${back||'← 戻る（キャンセル）'}</button>${save}</div>`;
