@@ -298,16 +298,16 @@ const STORE=(function(){const LSK='staffapp.key',LSCN='staffapp.cn',CH=100,chunk
   async applyRemote(){S.stale=false;await flush();const c=await api.loadCloud(false);STATE={OV:c.state.OV,CN:localCN(),CL:c.state.CL,CX:c.state.CX};boot(D0)}};
  return api})();
 /* ---------- 自動ログアウト（30分無操作・初期ON／OFFにはパスワードが必要） ---------- */
-const ALK='staffapp.autologout',ACTK='staffapp.act',AL_MS=30*60*1000,AL_PW='hero1234';
-const alOn=()=>{try{return localStorage.getItem(ALK)!=='off'}catch(e){return true}},
- alSet=on=>{try{if(on)localStorage.removeItem(ALK);else localStorage.setItem(ALK,'off')}catch(e){}};
+const ALK='staffapp.autologout',ACTK='staffapp.act',AL_DEF=5,AL_PW='hero1234';
+const alMin=()=>{try{const v=localStorage.getItem(ALK);if(v==='off')return 0;const n=+v;return n>=1&&n<=1440?n:AL_DEF}catch(e){return AL_DEF}},
+ alOn=()=>alMin()>0,alSetMin=n=>{try{if(n===AL_DEF)localStorage.removeItem(ALK);else localStorage.setItem(ALK,n===0?'off':String(n))}catch(e){}};
 function alInit(){if(window.__alI)return;window.__alI=1;window.__act=Date.now();let t=0;
  const bump=()=>{const n=Date.now();window.__act=n;if(n-t>3000){t=n;try{localStorage.setItem(ACTK,String(n))}catch(e){}}};
  ['click','keydown','touchstart','pointerdown','scroll','wheel','input','change'].forEach(e=>addEventListener(e,bump,{passive:true,capture:true}));
- addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target&&e.target.id==='al_pw'){const b=document.querySelector('[data-aloff]');if(b)b.click()}});setInterval(alCheck,5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)alCheck()})}
+ addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target&&e.target.id==='al_pw'){const b=document.querySelector('[data-alsave]');if(b)b.click()}});setInterval(alCheck,5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)alCheck()})}
 function alCheck(){if(window.APP_CONFIG&&window.APP_CONFIG.api==='local')return alBanner(0);if(!alOn())return alBanner(0);
  let last=window.__act||Date.now();try{last=Math.max(last,+localStorage.getItem(ACTK)||0)}catch(e){}
- const left=AL_MS-(Date.now()-last);if(left<=0){alBanner(0);return doLogout(true)}alBanner(left<=60000?Math.ceil(left/1000):0)}
+ const left=alMin()*60000-(Date.now()-last);if(left<=0){alBanner(0);return doLogout(true)}alBanner(left<=60000?Math.ceil(left/1000):0)}
 function alBanner(sec){let b=document.getElementById('albn');if(!sec){if(b)b.hidden=true;return}
  if(!b){b=document.createElement('div');b.id='albn';b.style.cssText='position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9998;background:#b91c1c;color:#fff;padding:10px 16px;border-radius:12px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.35);max-width:92vw;text-align:center';document.body.appendChild(b)}
  b.hidden=false;b.textContent=`⏱ 操作がないため、あと${sec}秒で自動ログアウトします（画面を操作すると継続）`}
@@ -1001,11 +1001,12 @@ function makeHaichiXlsx(sheets){
  ['xl/_rels/workbook.xml.rels',H+`<Relationships xmlns="${N}package/2006/relationships">${parts.map((_,i)=>`<Relationship Id="rId${i+1}" Type="${N}officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId${n+1}" Type="${N}officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
  ['xl/styles.xml',styles],...parts.map((p,i)=>[`xl/worksheets/sheet${i+1}.xml`,p.xml])])}
 
-function alForm(msg){const on=alOn();open(`<h3>🔒 自動ログアウトの設定</h3><p>一定時間（<b>30分</b>）操作がないと、自動でログアウトし、アクセスキーの入力画面に戻ります。共有のスマホ・PCからの閲覧を守るための設定です。</p>
-<div class="box" style="padding:12px;margin:8px 0"><b>現在：${on?'<span style="color:#15803d">ON（有効）</span>':'<span style="color:#b91c1c">OFF（無効）</span>'}</b>（この端末の設定）</div>
-${on?`<div id="alpw" hidden><label class="fl">OFFにするにはパスワードを入力してください<input id="al_pw" type="password" autocomplete="off" placeholder="パスワード"></label><div id="al_msg" style="color:#b91c1c;font-size:13px;min-height:18px;margin:4px 0"></div><div class="acts" style="justify-content:flex-start"><button class="btn d" data-aloff="1">OFFにする</button><button class="btn" data-alcancel="1">やめる</button></div></div><button class="btn" id="al_ask" data-alask="1">自動ログアウトをOFFにする…（パスワードが必要）</button>`:`<button class="btn p" data-alon="1">ONに戻す</button>`}
+function alForm(msg){const m=alMin(),on=m>0;open(`<h3>🔒 自動ログアウトの設定</h3><p>一定時間操作がないと、自動でログアウトし、アクセスキーの入力画面に戻ります。共有のスマホ・PCからの閲覧を守るための設定です。</p>
+<div class="box" style="padding:12px;margin:8px 0"><b>現在：${on?`<span style="color:#15803d">ON　${m}分間 操作がないとログアウト</span>`:'<span style="color:#b91c1c">OFF（無効）</span>'}</b>（この端末の設定・初期値は${AL_DEF}分）</div>
+<div id="alchg" hidden><div class="fg3"><label class="fl">無操作の時間（分）<input id="al_min" type="number" min="1" max="1440" value="${on?m:AL_DEF}"></label><label class="fl" style="justify-content:flex-end"><span class="chk"><input id="al_off" type="checkbox"${on?'':' checked'}> 自動ログアウトを<b>OFF</b>にする</span></label><span></span><span></span></div>
+<label class="fl">パスワード（変更するには必要です）<input id="al_pw" type="password" autocomplete="off" placeholder="パスワード"></label><div id="al_msg" style="color:#b91c1c;font-size:13px;min-height:18px;margin:4px 0">${esc(msg||'')}</div><div class="acts" style="justify-content:flex-start"><button class="btn p" data-alsave="1">変更を保存</button><button class="btn" data-alcancel="1">やめる</button></div></div>
+<button class="btn" id="al_ask" data-alask="1">時間を変更・OFFにする…（パスワードが必要）</button>
 <p class="mut" style="font-size:12px;margin-top:10px">※ 終了1分前に画面下へカウントダウンが出ます。操作すると継続されます。</p>`,mfoot('<button class="btn p big" data-nav="done">閉じる</button>','← 戻る'))}
-
 const HCK='staffapp.hc',hcLoad=()=>{try{return Object.assign({},HC,JSON.parse(localStorage.getItem(HCK)||'{}'))}catch(e){return{...HC}}};
 /* 期間(from〜to：YYYY-MM-DD)内で「確定」スタッフのいる現場日を、月をまたいで集める。site指定で現場を絞る */
 function hcEntries(from,to,site){const L=[];M.forEach((m,mi)=>m.cols.forEach((c,ci)=>{if(c.del)return;if(site&&c.site!==site)return;const d=iso(dt(mi,ci));if(d<from||d>to)return;
@@ -1113,10 +1114,13 @@ if(x=c('[data-cl]'))return showClose(x.dataset.cl);
 if(c('#csvb'))return csvForm();
 if(c('#logoutb'))return doLogout();
 if(c('#albtn'))return alForm();
-if(c('[data-alask]')){$('#alpw').hidden=false;$('#al_ask').hidden=true;return $('#al_pw').focus()}
+if(c('[data-alask]')){$('#alchg').hidden=false;$('#al_ask').hidden=true;return $('#al_pw').focus()}
 if(c('[data-alcancel]'))return alForm();
-if(c('[data-alon]')){alSet(true);toast('🔒 自動ログアウトをONにしました');return alForm()}
-if(c('[data-aloff]')){const v=$('#al_pw').value;if(v!==AL_PW){$('#al_msg').textContent='パスワードが違います。';$('#al_pw').value='';return $('#al_pw').focus()}alSet(false);toast('自動ログアウトをOFFにしました');return alForm()}
+if(c('[data-alsave]')){const off=$('#al_off').checked,mn=Math.round(+$('#al_min').value),nw=off?0:mn,msg=t=>{$('#al_msg').textContent=t;$('#al_pw').focus()};
+ if(!off&&!(mn>=1&&mn<=1440))return msg('時間は1〜1440分の範囲で入力してください。');
+ if(nw===alMin())return msg('現在の設定と同じです。');
+ if($('#al_pw').value!==AL_PW){$('#al_pw').value='';return msg('パスワードが違います。')}
+ alSetMin(nw);window.__act=Date.now();toast(nw?`🔒 無操作 ${nw}分で自動ログアウトに変更しました`:'自動ログアウトをOFFにしました');return alForm()}
 if(c('#bkout'))return backupOut();
 if(c('#bkgo'))return runRestore();
 if(c('#csvgo'))return runImport();
