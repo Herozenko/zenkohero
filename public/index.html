@@ -240,7 +240,7 @@ footer{max-width:1200px;margin:auto;padding:0 14px 24px;color:var(--mut);font-si
  .row{grid-template-columns:1fr auto}.dts{grid-column:1/-1}
 }
 </style></head><body>
-<header><div class="hw"><div class="hr"><h1>スタッフ管理<small id="sub"></small></h1><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end"><span id="sv" style="white-space:nowrap" class="mut" style="font-size:12px"></span><button class="btn" id="csvb">⇅ CSV</button><button class="btn p" id="newst">＋ スタッフ登録</button><button class="btn" id="logoutb" title="ログアウト（この端末のアクセスキーを破棄して入力画面に戻る）">🔓 ログアウト</button></div></div>
+<header><div class="hw"><div class="hr"><h1>スタッフ管理<small id="sub"></small></h1><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end"><span id="sv" style="white-space:nowrap" class="mut" style="font-size:12px"></span><button class="btn" id="csvb">⇅ CSV</button><button class="btn p" id="newst">＋ スタッフ登録</button><button class="btn" id="albtn" title="自動ログアウトの設定">🔒 自動ログアウト</button><button class="btn" id="logoutb" title="ログアウト（この端末のアクセスキーを破棄して入力画面に戻る）">🔓 ログアウト</button></div></div>
 <div class="hnav"><button class="nb" data-nav="back" title="前の画面に戻る">← 戻る</button><button class="nb" data-nav="top" title="TOPへ">🏠 TOP</button><nav><button data-tab="roster" class="on">👥 スタッフ名簿</button><button data-tab="shift">📅 シフト表</button><button data-tab="find">🔎 業務で探す</button><button data-tab="client">🏢 クライアント</button></nav></div></div></header>
 <main id="main"><p class="mut" style="padding:14px">⏳ 読み込み中…（ずっとこの表示の場合は、ブラウザを最新版に更新するか、SafariやChromeで開き直してください）</p></main>
 <footer id="ft"></footer>
@@ -297,11 +297,25 @@ const STORE=(function(){const LSK='staffapp.key',LSCN='staffapp.cn',CH=100,chunk
    document['addEventListener']('visibilitychange',()=>{if(!document.hidden){S.idle=Date.now();check()}});setInterval(check,15000)},
   async applyRemote(){S.stale=false;await flush();const c=await api.loadCloud(false);STATE={OV:c.state.OV,CN:localCN(),CL:c.state.CL,CX:c.state.CX};boot(D0)}};
  return api})();
-async function doLogout(){try{await STORE.flushNow()}catch(e){}
+/* ---------- 自動ログアウト（30分無操作・初期ON／OFFにはパスワードが必要） ---------- */
+const ALK='staffapp.autologout',ACTK='staffapp.act',AL_MS=30*60*1000,AL_PW='hero1234';
+const alOn=()=>{try{return localStorage.getItem(ALK)!=='off'}catch(e){return true}},
+ alSet=on=>{try{if(on)localStorage.removeItem(ALK);else localStorage.setItem(ALK,'off')}catch(e){}};
+function alInit(){if(window.__alI)return;window.__alI=1;window.__act=Date.now();let t=0;
+ const bump=()=>{const n=Date.now();window.__act=n;if(n-t>3000){t=n;try{localStorage.setItem(ACTK,String(n))}catch(e){}}};
+ ['click','keydown','touchstart','pointerdown','scroll','wheel','input','change'].forEach(e=>addEventListener(e,bump,{passive:true,capture:true}));
+ addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target&&e.target.id==='al_pw'){const b=document.querySelector('[data-aloff]');if(b)b.click()}});setInterval(alCheck,5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)alCheck()})}
+function alCheck(){if(window.APP_CONFIG&&window.APP_CONFIG.api==='local')return alBanner(0);if(!alOn())return alBanner(0);
+ let last=window.__act||Date.now();try{last=Math.max(last,+localStorage.getItem(ACTK)||0)}catch(e){}
+ const left=AL_MS-(Date.now()-last);if(left<=0){alBanner(0);return doLogout(true)}alBanner(left<=60000?Math.ceil(left/1000):0)}
+function alBanner(sec){let b=document.getElementById('albn');if(!sec){if(b)b.hidden=true;return}
+ if(!b){b=document.createElement('div');b.id='albn';b.style.cssText='position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9998;background:#b91c1c;color:#fff;padding:10px 16px;border-radius:12px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.35);max-width:92vw;text-align:center';document.body.appendChild(b)}
+ b.hidden=false;b.textContent=`⏱ 操作がないため、あと${sec}秒で自動ログアウトします（画面を操作すると継続）`}
+async function doLogout(auto){try{await STORE.flushNow()}catch(e){}
  try{STORE.forgetKey()}catch(e){}
  try{sessionStorage.clear()}catch(e){}
  try{document.cookie.split(';').forEach(c=>{const n=c.split('=')[0].trim();if(n)document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/'})}catch(e){}
- location.replace(location.pathname)}
+ location.replace(location.pathname+(auto?'?al=1':''))}
 function start(){const m=document.getElementById('main'),box=(t,x)=>{m.innerHTML=`<div class="box" style="max-width:440px;margin:30px auto"><b>${t}</b><p class="mut" style="margin:6px 0">${x}</p></div>`};
  const load=async()=>{m.innerHTML='<p class="mut" style="padding:14px">☁ データを読み込み中…</p>';
   try{const c=await STORE.loadCloud(true);D0=Object.assign({roster:[]},c.base||{});D0.roster=[];STATE={OV:c.state.OV,CN:STORE.localCN(),CL:c.state.CL,CX:c.state.CX};boot(D0);STORE.watch()}
@@ -309,7 +323,7 @@ function start(){const m=document.getElementById('main'),box=(t,x)=>{m.innerHTML
  const askKey=msg=>{m.innerHTML=`<div class="box" style="max-width:440px;margin:30px auto"><b style="font-size:16px">🔑 アクセスキーを入力してください</b><p class="mut" style="margin:6px 0 10px">チームで共有されているアクセスキーを入力すると開きます。この端末では、次回から入力は不要です。</p><input type="password" id="kin" placeholder="アクセスキー" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false"><label class="chk" style="margin-top:8px"><input type="checkbox" id="kshow"> キーを表示する</label><p class="bad" id="kmsg" style="min-height:1.3em;margin:8px 0 0">${msg||''}</p><button class="btn p" id="kgo" style="width:100%;margin-top:6px;padding:12px">開く</button></div>`;
   const go=()=>{const v=document.getElementById('kin').value.trim();if(!v){document.getElementById('kmsg').textContent='アクセスキーを入力してください。';return}STORE.setKey(v);load()};
   document.getElementById('kgo').onclick=go;document.getElementById('kin').onkeydown=e=>{if(e.key==='Enter')go()};document.getElementById('kshow').onchange=e=>{document.getElementById('kin').type=e.target.checked?'text':'password'};document.getElementById('kin').focus()};
- if(!STORE.captureKey())return askKey('');load()}
+ if(!STORE.captureKey())return askKey(/[?&]al=1/.test(location.search)?'一定時間操作がなかったため、自動ログアウトしました。もう一度アクセスキーを入力してください。':'');load()}
 function boot(Din){offAll();const D=JSON.parse(JSON.stringify(Din));
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const VK={'髙':'高','﨑':'崎','𠮷':'吉','邊':'辺','邉':'辺','齋':'斎','齊':'斎','斉':'斎','澤':'沢','濱':'浜','國':'国','廣':'広','櫻':'桜','嶋':'島','德':'徳','兒':'児','淵':'渕','學':'学','圓':'円','榮':'栄','關':'関','槇':'槙','冨':'富'},VKR=new RegExp('['+Object.keys(VK).join('')+']','gu');
@@ -987,6 +1001,11 @@ function makeHaichiXlsx(sheets){
  ['xl/_rels/workbook.xml.rels',H+`<Relationships xmlns="${N}package/2006/relationships">${parts.map((_,i)=>`<Relationship Id="rId${i+1}" Type="${N}officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId${n+1}" Type="${N}officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
  ['xl/styles.xml',styles],...parts.map((p,i)=>[`xl/worksheets/sheet${i+1}.xml`,p.xml])])}
 
+function alForm(msg){const on=alOn();open(`<h3>🔒 自動ログアウトの設定</h3><p>一定時間（<b>30分</b>）操作がないと、自動でログアウトし、アクセスキーの入力画面に戻ります。共有のスマホ・PCからの閲覧を守るための設定です。</p>
+<div class="box" style="padding:12px;margin:8px 0"><b>現在：${on?'<span style="color:#15803d">ON（有効）</span>':'<span style="color:#b91c1c">OFF（無効）</span>'}</b>（この端末の設定）</div>
+${on?`<div id="alpw" hidden><label class="fl">OFFにするにはパスワードを入力してください<input id="al_pw" type="password" autocomplete="off" placeholder="パスワード"></label><div id="al_msg" style="color:#b91c1c;font-size:13px;min-height:18px;margin:4px 0"></div><div class="acts" style="justify-content:flex-start"><button class="btn d" data-aloff="1">OFFにする</button><button class="btn" data-alcancel="1">やめる</button></div></div><button class="btn" id="al_ask" data-alask="1">自動ログアウトをOFFにする…（パスワードが必要）</button>`:`<button class="btn p" data-alon="1">ONに戻す</button>`}
+<p class="mut" style="font-size:12px;margin-top:10px">※ 終了1分前に画面下へカウントダウンが出ます。操作すると継続されます。</p>`,mfoot('<button class="btn p big" data-nav="done">閉じる</button>','← 戻る'))}
+
 const HCK='staffapp.hc',hcLoad=()=>{try{return Object.assign({},HC,JSON.parse(localStorage.getItem(HCK)||'{}'))}catch(e){return{...HC}}};
 /* 期間(from〜to：YYYY-MM-DD)内で「確定」スタッフのいる現場日を、月をまたいで集める。site指定で現場を絞る */
 function hcEntries(from,to,site){const L=[];M.forEach((m,mi)=>m.cols.forEach((c,ci)=>{if(c.del)return;if(site&&c.site!==site)return;const d=iso(dt(mi,ci));if(d<from||d>to)return;
@@ -1093,6 +1112,11 @@ if(c('#cdet')){const cl=clById(c('#cdet').dataset.cid);let y;if(cl){
 if(x=c('[data-cl]'))return showClose(x.dataset.cl);
 if(c('#csvb'))return csvForm();
 if(c('#logoutb'))return doLogout();
+if(c('#albtn'))return alForm();
+if(c('[data-alask]')){$('#alpw').hidden=false;$('#al_ask').hidden=true;return $('#al_pw').focus()}
+if(c('[data-alcancel]'))return alForm();
+if(c('[data-alon]')){alSet(true);toast('🔒 自動ログアウトをONにしました');return alForm()}
+if(c('[data-aloff]')){const v=$('#al_pw').value;if(v!==AL_PW){$('#al_msg').textContent='パスワードが違います。';$('#al_pw').value='';return $('#al_pw').focus()}alSet(false);toast('自動ログアウトをOFFにしました');return alForm()}
 if(c('#bkout'))return backupOut();
 if(c('#bkgo'))return runRestore();
 if(c('#csvgo'))return runImport();
@@ -1209,6 +1233,6 @@ else if(t.dataset.as){const am=+t.dataset.am,ac=+t.dataset.ac;assignChk(+t.datas
 else if(t.dataset.ec!==undefined)editCol(t)});
 on('keydown',e=>{if(e.key==='Escape')closeModal()});
 if(STORE.needInit&&STORE.mode==='cloud'){R.forEach(r=>{OV.staff[r.id]={...pick(r),skills:r.skills||{},ng:r.ng||''}});STORE.needInit=false;save();saveCn();saveCl()}
-purgeLegacy();if(st.tab==='close')st.tab='shift';go(st.tab);window.__ready=true;if(!IS_PC){const b=$('#csvb');if(b)b.style.display='none'}STORE.show();if(window.APP_CONFIG&&window.APP_CONFIG.api==='local'){const b=$('#logoutb');if(b)b.style.display='none'}}
+purgeLegacy();if(st.tab==='close')st.tab='shift';go(st.tab);window.__ready=true;if(!IS_PC){const b=$('#csvb');if(b)b.style.display='none'}STORE.show();if(window.APP_CONFIG&&window.APP_CONFIG.api==='local'){['#logoutb','#albtn'].forEach(q=>{const b=$(q);if(b)b.style.display='none'})}alInit()}
 start();
 </script></body></html>
